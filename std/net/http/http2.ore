@@ -1,0 +1,245 @@
+package http
+
+import "std/context"
+import "std/net/http/hpack"
+import "std/net/url"
+import "std/strconv"
+import "std/strings"
+import "std/time"
+
+type HTTP2Config struct {
+    MaxStreams int
+    StreamWindow int
+    MaxWaiters int
+}
+
+type HTTP2Stats struct {
+    Active int
+    Waiting int
+    Closed bool
+}
+
+type HTTP2Conn struct {
+    work channel<h2Request>
+    shared Mutex<h2Shared>
+    config ClientConfig
+    limits HTTP2Config
+    live bool
+}
+
+type h2Request struct {
+    ticket int
+    wake bool
+    fields Array<hpack.Field>
+    body Array<byte>
+    head bool
+    done channel<h2Result>
+}
+
+type h2Result struct {
+    response ClientResponse
+    failure error
+}
+
+type h2Shared struct {
+    closed bool
+    closing bool
+    failure error
+    inFlight int
+    queued int
+    next int
+    cancels Array<int>
+    active int
+    waiting int
+}
+
+func DefaultHTTP2Config() HTTP2Config {
+    return HTTP2Config{MaxStreams: 32, StreamWindow: 262144, MaxWaiters: 256}
+}
+
+func http2Settings(config HTTP2Config) (HTTP2Config, error) {
+    let defaults = DefaultHTTP2Config()
+    if config.MaxStreams < 0 || config.StreamWindow < 0 || config.MaxWaiters < 0 {
+        return defaults, error("http2: negative configuration")
+    }
+    var chosen = config
+    if chosen.MaxStreams == 0 {
+        chosen.MaxStreams = defaults.MaxStreams
+    }
+    if chosen.StreamWindow == 0 {
+        chosen.StreamWindow = defaults.StreamWindow
+    }
+    if chosen.MaxWaiters == 0 {
+        chosen.MaxWaiters = defaults.MaxWaiters
+    }
+    if chosen.MaxStreams > 1024 || chosen.MaxWaiters > 65536 || chosen.StreamWindow < 16384 || chosen.StreamWindow > 16777216 {
+        return defaults, error("http2: configuration out of range")
+    }
+    return chosen, nil
+}
+
+func emptyH2Shared() h2Shared {
+    return h2Shared{closed: true, closing: true, failure: nil, inFlight: 0, queued: 0, next: 0, cancels: Array<int>{}, active: 0, waiting: 0}
+}
+
+func emptyHTTP2Conn() HTTP2Conn {
+    return HTTP2Conn{work: channel<h2Request>(1), shared: mutex(emptyH2Shared()), config: DefaultClientConfig(), limits: DefaultHTTP2Config(), live: false}
+}
+
+func (c Client) NewHTTP2Conn(conn own ClientConn, config HTTP2Config) (HTTP2Conn, error) {
+    if !c.live {
+        return emptyHTTP2Conn(), error("http.Client: empty client")
+    }
+    let limits, err = http2Settings(config)
+    if err != nil {
+        return emptyHTTP2Conn(), err
+    }
+    var state = emptyH2Shared()
+    state.closed = false
+    state.closing = false
+    let work = channel<h2Request>(limits.MaxStreams + limits.MaxWaiters + 4)
+    let shared = mutex(state)
+    go h2Serve(conn, work, shared, c.config, limits)
+    return HTTP2Conn{work: work, shared: shared, config: c.config, limits: limits, live: true}, nil
+}
+
+func (h HTTP2Conn) Stats() HTTP2Stats {
+    if !h.live {
+        return HTTP2Stats{Active: 0, Waiting: 0, Closed: true}
+    }
+    return h.shared.withLock(func(s mut h2Shared) HTTP2Stats {
+        return HTTP2Stats{Active: s.active, Waiting: s.waiting, Closed: s.closed || s.closing}
+    })
+}
+
+func (h HTTP2Conn) Close() {
+    if !h.live {
+        return
+    }
+    let work = h.work
+    let room = h.limits.MaxStreams + h.limits.MaxWaiters + 2
+    h.shared.withLock(func(s mut h2Shared) {
+        if s.closed || s.closing {
+            return
+        }
+        s.closing = true
+        if s.queued < room {
+            s.queued += 1
+            work.send(h2Wake())
+        }
+    })
+}
+
+func h2Wake() h2Request {
+    return h2Request{ticket: 0, wake: true, fields: Array<hpack.Field>{}, body: Array<byte>{}, head: false, done: channel<h2Result>(1)}
+}
+
+func (h HTTP2Conn) requestFields(method string, absoluteURL string, headers Header, length int) (Array<hpack.Field>, error) {
+    var fields = Array<hpack.Field>{}
+    if !token(method) || asciiEqual(method, "CONNECT") || asciiEqual(method, "TRACE") {
+        return fields, error("http.Client: unsupported or invalid method")
+    }
+    let target, urlErr = url.ParseAbsolute(absoluteURL)
+    if urlErr != nil {
+        return fields, urlErr
+    }
+    if length > h.config.MaxRequestBodyBytes {
+        return fields, error("http.Client: request body too large")
+    }
+    fields.push(hpack.Field{Name: ":method", Value: method, Sensitive: false})
+    fields.push(hpack.Field{Name: ":scheme", Value: target.Scheme, Sensitive: false})
+    fields.push(hpack.Field{Name: ":authority", Value: target.Authority, Sensitive: false})
+    fields.push(hpack.Field{Name: ":path", Value: target.RequestTarget, Sensitive: false})
+    if length > 0 {
+        fields.push(hpack.Field{Name: "content-length", Value: strconv.Itoa(length), Sensitive: false})
+    }
+    var size = 0
+    for field in fields {
+        size += field.Name.len() + field.Value.len() + 32
+    }
+    for entry in headers.entries {
+        if !token(entry.Name) || !fieldValue(entry.Value) {
+            return Array<hpack.Field>{}, error("http.Client: invalid header " + strconv.Quote(entry.Name))
+        }
+        if clientControlled(entry.Name) || asciiEqual(entry.Name, "TE") || asciiEqual(entry.Name, "Keep-Alive") {
+            return Array<hpack.Field>{}, error("http.Client: client owns transport header")
+        }
+        size += entry.Name.len() + entry.Value.len() + 32
+        if size > h.config.MaxHeaderBytes {
+            return Array<hpack.Field>{}, error("http.Client: metadata too large")
+        }
+        fields.push(hpack.Field{Name: strings.ToLower(entry.Name), Value: entry.Value, Sensitive: false})
+    }
+    if size > h.config.MaxHeaderBytes {
+        return Array<hpack.Field>{}, error("http.Client: metadata too large")
+    }
+    return fields, nil
+}
+
+func (h HTTP2Conn) Do(ctx context.Context, method string, absoluteURL string, headers Header, body []byte) (ClientResponse, error) {
+    if !h.live {
+        return emptyClientResponse(), error("http2: closed connection")
+    }
+    let fields, fieldsErr = h.requestFields(method, absoluteURL, headers, body.len())
+    if fieldsErr != nil {
+        return emptyClientResponse(), fieldsErr
+    }
+    let contextErr = clientContextError(ctx)
+    if contextErr != nil {
+        return emptyClientResponse(), contextErr
+    }
+    let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(h.config.Timeout))
+    let guard = clientCancellation{cancel: cancel}
+    var payload = Array<byte>{}
+    for value in body {
+        payload.push(value)
+    }
+    let done = channel<h2Result>(1)
+    var slot = Array<h2Request>{}
+    slot.push(h2Request{ticket: 0, wake: false, fields: fields, body: payload, head: method == "HEAD", done: done})
+    let work = h.work
+    let limit = h.limits.MaxStreams + h.limits.MaxWaiters
+    let ticket, admitErr = h.shared.withLock(func(s mut h2Shared) (int, error) {
+        if s.closed || s.closing {
+            if s.failure != nil {
+                return 0, s.failure
+            }
+            return 0, error("http2: closed connection")
+        }
+        if s.inFlight >= limit || s.queued >= limit {
+            return 0, error("http2: too many waiting requests")
+        }
+        s.inFlight += 1
+        s.queued += 1
+        s.next += 1
+        let _, taken = slot.pop()
+        var request = taken
+        request.ticket = s.next
+        work.send(request)
+        return s.next, nil
+    })
+    if admitErr != nil {
+        return emptyClientResponse(), admitErr
+    }
+    select {
+        case let result, _ = done.receive() {
+            h.shared.withLock(func(s mut h2Shared) {
+                s.inFlight -= 1
+            })
+            return result.response, result.failure
+        }
+        case bounded.Done().receive() {
+            h.shared.withLock(func(s mut h2Shared) {
+                s.inFlight -= 1
+                if !s.closed {
+                    s.cancels.push(ticket)
+                    if s.queued < limit + 2 {
+                        s.queued += 1
+                        work.send(h2Wake())
+                    }
+                }
+            })
+            return emptyClientResponse(), h2Reason(bounded.Err(), error("context deadline exceeded"))
+        }
+    }
+}
