@@ -2,6 +2,7 @@
 const fs = require('fs');
 const http2 = require('http2');
 const https = require('https');
+const zlib = require('zlib');
 
 const [cert, key, mode] = process.argv.slice(2);
 let sessions = 0;
@@ -38,6 +39,19 @@ function handle(req, res) {
       reply(String(sessions));
     } else if (url.pathname === '/big') {
       reply('x'.repeat(300000));
+    } else if (url.pathname === '/gz') {
+      const data = Buffer.alloc(300000);
+      let seed = 7;
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 1) {
+        seed = (seed * 1103515245 + 12345) % 2147483648;
+        data[i] = seed % 64 + 32;
+        sum = (sum + data[i]) % 1000000007;
+      }
+      res.setHeader('content-type', 'text/plain');
+      res.setHeader('content-encoding', 'gzip');
+      res.setHeader('x-sum', String(sum));
+      res.end(zlib.gzipSync(data));
     } else if (url.pathname === '/echo') {
       reply(`${req.httpVersion} ${req.method} ${size}`);
     } else if (url.pathname === '/header') {

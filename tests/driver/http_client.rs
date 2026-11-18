@@ -168,11 +168,11 @@ fn http2_auto_client_interoperates_with_node_and_falls_back_to_http1() {
         (
             "h2",
             "concurrent 01234\npeak 200 5\necho 200 2.0 POST 150000\nbig 200 300000 bytes\n\
-             header 200 abc\nmissing 404 missing\nopen 200 300000 bytes in several pieces\nsessions 200 1\nconnections 1\n",
+             header 200 abc\nmissing 404 missing\nopen 200 300000 bytes in several pieces\ngzip 300000 bytes intact=true encoding headers=0\nsessions 200 1\nconnections 1\n",
         ),
         (
             "http1",
-            "echo 200 1.1 POST 0\nopen 200 300000 bytes in several pieces\nconnections 0\n",
+            "echo 200 1.1 POST 0\nopen 200 300000 bytes in several pieces\ngzip 300000 bytes intact=true encoding headers=0\nconnections 0\n",
         ),
     ] {
         let server = node_server(&script, &tls, mode);

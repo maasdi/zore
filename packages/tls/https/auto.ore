@@ -226,6 +226,12 @@ func (a AutoClient) Open(ctx context.Context, method string, absoluteURL string,
     }
 }
 
+func (a AutoClient) OpenDecoded(ctx context.Context, method string, absoluteURL string, headers http.Header, body []byte, stream http.StreamConfig, config http.DecodeConfig) (http.ResponseStream, error) {
+    let request = http.DecodeHeaders(headers, config)?
+    let opened = a.Open(ctx, method, absoluteURL, request, body, stream)?
+    return http.DecodeStream(opened, config)
+}
+
 type autoCancel struct {
     cancel func()
 }
