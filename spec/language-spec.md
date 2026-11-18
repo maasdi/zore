@@ -13364,8 +13364,8 @@ guide example.
 `ClientConn` on which HTTP/2 has already been agreed, for example a TLS
 connection whose negotiated application protocol is `h2` (§37.10). It is a
 building block: `Do`, `Pool`, `Follow`, `DoRetry`, `DoDecoded`, proxies and the
-`tls/https` transport keep speaking HTTP/1.1 and never use it. Negotiation,
-HTTP/1.1 fallback and streamed HTTP/2 bodies are not delivered.
+`tls/https` transport keep speaking HTTP/1.1 and never use it. Negotiation and
+fallback are locked in §37.50 and streamed responses in §37.51.
 
 ```ore
 type HTTP2Config struct {
@@ -13542,8 +13542,8 @@ While the first connection to an address is being set up, other requests to it
 wait for it instead of connecting. Dials are made one at a time; waiting for
 another dial does not use up a request's `DialTimeout`, which starts when its
 own dial does. At most `MaxAutoOrigins` addresses keep a connection; beyond that a
-request uses a connection of its own that closes after it. A request on a kept
-connection that fails with `http2: request not processed` or
+request uses a connection of its own that closes after it. A request on an HTTP/2
+connection, kept or new, that fails with `http2: request not processed` or
 `http2: closed connection` is sent once more, on a new connection if needed,
 because the server did not process it; after `Close` it fails instead. Plain `http` URLs use HTTP/1.1 as `http.Client.Do`
 does; cleartext HTTP/2 is not supported.
@@ -13582,6 +13582,88 @@ fallback with no kept connection; against a Zore TLS server without protocol
 negotiation, fallback with a zero `DialTimeout`, an `https` request after a
 plain `http` one to the same address failing at once, `Close` and refusal
 after it.
+
+## 37.51 Streamed HTTP/2 responses — LOCKED
+
+HTTP/2 responses can be read as they arrive, with the same `ResponseStream` type
+as §37.41.
+
+```ore
+func (h HTTP2Conn) Open(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig) (ResponseStream, error)
+func (a AutoClient) Open(ctx context.Context, method string, absoluteURL string, headers http.Header, body []byte, config http.StreamConfig) (http.ResponseStream, error)
+```
+
+`HTTP2Conn.Open` validates and sends the request like `HTTP2Conn.Do` and
+returns once the final response headers arrive, bounded by the client's
+`Timeout` and by `ctx`. `StreamConfig` is validated and defaulted as in
+§37.41. As for HTTP/1.1, a declared `content-length` above `MaxBodyBytes` fails
+with `http.Client: body too large` and a 205 response that declares content
+fails with `http.Client: 205 forbids content` before `Open` returns. The returned stream reports `StatusCode` and `Headers` at once; `Read`
+returns body bytes in order as they arrive, and `io.EOF` after the end of the
+stream. `Trailers` returns the response trailers and whether the body is
+complete. `StatusCode`, `Headers`, `Read`, `Trailers` and `Close` keep their
+§37.41 meanings.
+
+Flow control follows the reader. The stream's receive window is replenished only
+by bytes the caller has read, at most `StreamWindow` unread bytes are held per
+stream, and a stream that is not read stops its own data without stopping other
+streams; the connection window is replenished when data arrives. `Read` fails
+with `http.Client: body too large` beyond `MaxBodyBytes`, with
+`http.Client: body idle timeout` when no data arrives for `IdleTimeout`, with
+the context error when `ctx` ends or `Timeout` passes, and with the stream and
+connection errors of §37.49, including `http2: malformed response` when the body
+size differs from `content-length`; data beyond the declared length is refused
+before it reaches the caller. Data already received before a failure is
+returned first, including the bytes up to `MaxBodyBytes`. Closing or dropping a stream before its end sends `RST_STREAM`
+with `CANCEL`, and other requests on the connection continue. An open stream
+counts as a call in progress for the `MaxStreams` plus `MaxWaiters` limit until
+it ends or is closed. A response without a body is complete when `Open`
+returns.
+
+`AutoClient.Open` chooses the connection like `AutoClient.Do` (§37.50), bounds
+choosing the connection by `DialTimeout` plus `Timeout`, and opens the response
+with `HTTP2Conn.Open` on HTTP/2 or `Client.OpenExchange` (§37.41) on HTTP/1.1;
+plain `http` URLs use `Client.Open`. A stream that fails before any header
+arrives is opened once more under the same rule as `AutoClient.Do`.
+
+```ore
+import "std/context"
+import "std/io"
+import "std/net/http"
+import "tls/https"
+
+func count(client https.AutoClient, target string) (int, error) {
+    let empty = Array<byte>{}
+    var stream = client.Open(context.Background(), "GET", target, http.NewHeader(), empty[:], http.DefaultStreamConfig())?
+    var buf = Array<byte>{}
+    for buf.len() < 4096 {
+        buf.push(0)
+    }
+    var total = 0
+    for {
+        let n, err = stream.Read(buf[:])
+        total += n
+        if err == io.EOF {
+            return total, nil
+        }
+        if err != nil {
+            return total, err
+        }
+    }
+}
+```
+
+Compiler impact: changes to bundled `std/net/http` and `tls/https` sources; no
+runtime or syntax changes. Conformance: a scripted HTTP/2 peer that must stop at
+exactly the 262,144-byte stream window while the caller does not read and
+receives no window update until it does, then delivers 300,000 bytes; trailers;
+early `Close` sending `CANCEL`; a server reset after partial data returning the
+data then the reset error; the idle timeout; a body longer than its
+`content-length` refused before delivery; a declared length above
+`MaxBodyBytes` refused when `Open` returns; a body crossing `MaxBodyBytes`
+returning the allowed bytes first; a `HEAD` response complete at once; a buffered request on the same
+connection afterwards; and, against Node.js, a streamed 300,000-byte download
+over HTTP/2 and over the HTTP/1.1 fallback.
 
 # 38. Self-Hosting Constraint
 

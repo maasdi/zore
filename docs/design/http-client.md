@@ -144,8 +144,8 @@ error scope are decided in
 [decision 0004](../decisions/0004-http2-client.md). Application protocol
 negotiation in the `tls` package (spec §37.10), header compression (spec
 §37.48), multiplexed connections (spec §37.49) and automatic selection with
-HTTP/1.1 fallback (spec §37.50) are delivered; streamed HTTP/2 bodies lock their
-own contract before implementation.
+HTTP/1.1 fallback (spec §37.50) and streamed HTTP/2 responses (spec §37.51) are
+delivered.
 
 ## Acceptance evidence for each increment
 

@@ -44,6 +44,12 @@ type h2Stream struct {
     headers Header
     expected int
     data Array<byte>
+    streamed bool
+    delivered bool
+    received int
+    pipe Mutex<h2Pipe>
+    wake channel<bool>
+    trailers Header
 }
 
 type h2Engine struct {
@@ -221,7 +227,29 @@ func (e mut h2Engine) discard(index int, code int, failure error) {
     if code >= 0 {
         e.control(h2Reset, 0, stream.id, code)
     }
-    h2Fail(stream.done, failure)
+    h2Settle(stream, failure)
+}
+
+func h2Settle(stream h2Stream, failure error) {
+    if !stream.delivered {
+        h2Fail(stream.done, failure)
+        return
+    }
+    stream.pipe.withLock(func(p mut h2Pipe) {
+        if !p.finished && p.failure == nil {
+            p.failure = failure
+        }
+    })
+    h2Nudge(stream.wake)
+}
+
+func h2Nudge(wake channel<bool>) {
+    select {
+        case wake.send(true) {
+        }
+        default {
+        }
+    }
 }
 
 func (e mut h2Engine) malformed(index int) {
@@ -372,7 +400,7 @@ func (e mut h2Engine) admit() {
             }
         }
         let ended = request.body.len() == 0
-        e.streams.push(h2Stream{id: id, ticket: request.ticket, done: request.done, body: request.body, sent: 0, ended: ended, head: request.head, sendWindow: e.peerWindow, recvWindow: e.limits.StreamWindow, recvUnacked: 0, answered: false, status: 0, headers: NewHeader(), expected: 0 - 1, data: Array<byte>{}})
+        e.streams.push(h2Stream{id: id, ticket: request.ticket, done: request.done, body: request.body, sent: 0, ended: ended, head: request.head, sendWindow: e.peerWindow, recvWindow: e.limits.StreamWindow, recvUnacked: 0, answered: false, status: 0, headers: NewHeader(), expected: 0 - 1, data: Array<byte>{}, streamed: request.streamed, delivered: false, received: 0, pipe: request.pipe, wake: request.notify, trailers: NewHeader()})
     }
 }
 
@@ -624,6 +652,32 @@ func (e mut h2Engine) data(flags int, id int, payload []byte) {
         e.malformed(index)
         return
     }
+    let declared = e.streams[index].expected
+    var size = e.streams[index].data.len()
+    if e.streams[index].streamed {
+        size = e.streams[index].received
+    }
+    if declared >= 0 && e.streams[index].status != 304 && size + end - start > declared {
+        e.malformed(index)
+        return
+    }
+    if e.streams[index].streamed {
+        e.streams[index].received += end - start
+        if end > start {
+            let pipe = e.streams[index].pipe
+            pipe.withLock(func(p mut h2Pipe) {
+                for var i = start; i < end; i += 1 {
+                    p.data.push(payload[i])
+                }
+            })
+            h2Nudge(e.streams[index].wake)
+        }
+        e.streams[index].recvUnacked += length - (end - start)
+        if finished {
+            e.complete(index)
+        }
+        return
+    }
     if e.streams[index].data.len() + end - start > e.config.MaxBodyBytes {
         e.discard(index, h2Cancel, error("http.Client: body too large"))
         return
@@ -722,6 +776,9 @@ func (e mut h2Engine) respond(index int, fields []hpack.Field, finished bool) {
             e.malformed(index)
             return
         }
+        for field in fields {
+            e.streams[index].trailers.entries.push(HeaderEntry{Name: field.Name, Value: field.Value})
+        }
         e.complete(index)
         return
     }
@@ -766,6 +823,16 @@ func (e mut h2Engine) respond(index int, fields []hpack.Field, finished bool) {
     e.streams[index].status = status
     e.streams[index].headers = headers
     e.streams[index].expected = expected
+    if e.streams[index].streamed {
+        e.streams[index].delivered = true
+        let done = e.streams[index].done
+        let delivered = clone(e.streams[index].headers)
+        if finished {
+            e.complete(index)
+        }
+        done.send(h2Result{response: ClientResponse{StatusCode: status, Headers: delivered, Body: Array<byte>{}}, failure: nil})
+        return
+    }
     if finished {
         e.complete(index)
     }
@@ -774,14 +841,27 @@ func (e mut h2Engine) respond(index int, fields []hpack.Field, finished bool) {
 func (e mut h2Engine) complete(index int) {
     let stream = e.take(index)
     let done = stream.done
+    var size = stream.data.len()
+    if stream.streamed {
+        size = stream.received
+    }
     let checked = stream.expected >= 0 && !stream.head && stream.status != 304
-    if checked && stream.expected != stream.data.len() {
+    if checked && stream.expected != size {
         e.control(h2Reset, 0, stream.id, h2ProtocolError)
-        h2Fail(done, error("http2: malformed response"))
+        h2Settle(stream, error("http2: malformed response"))
         return
     }
     if !stream.ended {
         e.control(h2Reset, 0, stream.id, h2Cancel)
+    }
+    if stream.streamed {
+        let trailers = clone(stream.trailers)
+        stream.pipe.withLock(func(p mut h2Pipe) {
+            p.finished = true
+            p.trailers = clone(trailers)
+        })
+        h2Nudge(stream.wake)
+        return
     }
     done.send(h2Result{response: ClientResponse{StatusCode: stream.status, Headers: stream.headers, Body: stream.data}, failure: nil})
 }
@@ -917,6 +997,28 @@ func (e mut h2Engine) windowUpdate(id int, payload []byte) {
     }
 }
 
+func (e mut h2Engine) refill() {
+    for var i = 0; i < e.streams.len(); i += 1 {
+        if !e.streams[i].delivered {
+            continue
+        }
+        let pipe = e.streams[i].pipe
+        let taken = pipe.withLock(func(p mut h2Pipe) int {
+            let count = p.consumed
+            p.consumed = 0
+            return count
+        })
+        e.streams[i].recvUnacked += taken
+        if e.streams[i].recvUnacked >= e.limits.StreamWindow / 2 {
+            let amount = e.streams[i].recvUnacked
+            let id = e.streams[i].id
+            e.control(h2WindowUpdate, 0, id, amount)
+            e.streams[i].recvWindow += amount
+            e.streams[i].recvUnacked = 0
+        }
+    }
+}
+
 func (e mut h2Engine) publish() {
     let active = e.streams.len()
     let waiting = e.queue.len()
@@ -960,6 +1062,7 @@ func (e mut h2Engine) step() bool {
     }
     e.intake(idle)
     e.sync()
+    e.refill()
     e.admit()
     e.produce()
     var progress = e.write()

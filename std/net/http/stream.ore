@@ -28,6 +28,7 @@ type ResponseStream struct {
     total int
     done bool
     failure error
+    h2 Array<h2Reader>
 }
 
 type streamStop struct {
@@ -76,7 +77,7 @@ func streamContext(ctx context.Context, timeout time.Duration) (context.Context,
 }
 
 func emptyResponseStream() ResponseStream {
-    return ResponseStream{status: 0, headers: NewHeader(), trailers: NewHeader(), streams: Array<clientStream>{}, stops: Array<streamStop>{}, leases: Array<poolLease>{}, reuse: false, limit: 0, idle: 0, chunked: false, delimited: false, reset: false, remaining: 0, chunkEnd: false, total: 0, done: false, failure: nil}
+    return ResponseStream{status: 0, headers: NewHeader(), trailers: NewHeader(), streams: Array<clientStream>{}, stops: Array<streamStop>{}, leases: Array<poolLease>{}, reuse: false, limit: 0, idle: 0, chunked: false, delimited: false, reset: false, remaining: 0, chunkEnd: false, total: 0, done: false, failure: nil, h2: Array<h2Reader>{}}
 }
 
 func (c Client) Open(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config StreamConfig) (ResponseStream, error) {
@@ -156,7 +157,7 @@ func (c Client) openPrepared(ctx context.Context, stops own Array<streamStop>, l
         remaining = head.length
     }
     let reuse = head.reusable()
-    var result = ResponseStream{status: head.status, headers: head.headers, trailers: NewHeader(), streams: streams, stops: stops, leases: leases, reuse: reuse, limit: settings.MaxBodyBytes, idle: settings.IdleTimeout, chunked: head.chunked, delimited: !head.chunked && head.length < 0, reset: head.status == 205, remaining: remaining, chunkEnd: false, total: 0, done: false, failure: nil}
+    var result = ResponseStream{status: head.status, headers: head.headers, trailers: NewHeader(), streams: streams, stops: stops, leases: leases, reuse: reuse, limit: settings.MaxBodyBytes, idle: settings.IdleTimeout, chunked: head.chunked, delimited: !head.chunked && head.length < 0, reset: head.status == 205, remaining: remaining, chunkEnd: false, total: 0, done: false, failure: nil, h2: Array<h2Reader>{}}
     if !head.content || (fixed && head.length == 0) {
         let completeErr = result.complete()
         if completeErr != nil {
@@ -184,6 +185,9 @@ func (r mut ResponseStream) Read(buf mut []byte) (int, error) {
     }
     if r.done {
         return 0, io.EOF
+    }
+    if r.h2.len() > 0 {
+        return r.readHTTP2(buf)
     }
     if r.streams.len() == 0 {
         return 0, error("http.ResponseStream: empty stream")
@@ -310,6 +314,7 @@ func (r mut ResponseStream) fail(err error, idleBound bool) error {
 }
 
 func (r mut ResponseStream) release() {
+    r.h2 = Array<h2Reader>{}
     r.streams = Array<clientStream>{}
     r.leases = Array<poolLease>{}
     r.stops = Array<streamStop>{}

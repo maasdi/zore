@@ -157,8 +157,8 @@ redirects, retries, decoding and proxies delivered under §§37.44–37.47) and 
 HTTP/2 project (#290): its model is decided in
 [decision 0004](decisions/0004-http2-client.md); TLS protocol negotiation
 (§37.10), header compression (§37.48), multiplexed connections (§37.49) and
-the automatic HTTPS client `https.NewAutoClient` (§37.50) are delivered.
-Streamed HTTP/2 bodies remain open; the ordinary client calls still speak
+the automatic HTTPS client `https.NewAutoClient` (§37.50) with streamed
+responses (§37.51) are delivered; the ordinary client calls still speak
 HTTP/1.1 only. The remaining items are design/implementation
 follow-ups, not delivered client features; each public API must be locked under
 spec §53 before implementation.
