@@ -400,7 +400,7 @@ func (e mut h2Engine) admit() {
             }
         }
         let ended = request.body.len() == 0
-        e.streams.push(h2Stream{id: id, ticket: request.ticket, done: request.done, body: request.body, sent: 0, ended: ended, head: request.head, sendWindow: e.peerWindow, recvWindow: e.limits.StreamWindow, recvUnacked: 0, answered: false, status: 0, headers: NewHeader(), expected: 0 - 1, data: Array<byte>{}, streamed: request.streamed, delivered: false, received: 0, pipe: request.pipe, wake: request.wake2, trailers: NewHeader()})
+        e.streams.push(h2Stream{id: id, ticket: request.ticket, done: request.done, body: request.body, sent: 0, ended: ended, head: request.head, sendWindow: e.peerWindow, recvWindow: e.limits.StreamWindow, recvUnacked: 0, answered: false, status: 0, headers: NewHeader(), expected: 0 - 1, data: Array<byte>{}, streamed: request.streamed, delivered: false, received: 0, pipe: request.pipe, wake: request.notify, trailers: NewHeader()})
     }
 }
 

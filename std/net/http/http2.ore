@@ -37,7 +37,7 @@ type h2Request struct {
     done channel<h2Result>
     streamed bool
     pipe Mutex<h2Pipe>
-    wake2 channel<bool>
+    notify channel<bool>
 }
 
 type h2Pipe struct {
@@ -151,7 +151,7 @@ func (h HTTP2Conn) Close() {
 }
 
 func h2Wake() h2Request {
-    return h2Request{ticket: 0, wake: true, fields: Array<hpack.Field>{}, body: Array<byte>{}, head: false, done: channel<h2Result>(1), streamed: false, pipe: mutex(emptyH2Pipe()), wake2: channel<bool>(1)}
+    return h2Request{ticket: 0, wake: true, fields: Array<hpack.Field>{}, body: Array<byte>{}, head: false, done: channel<h2Result>(1), streamed: false, pipe: mutex(emptyH2Pipe()), notify: channel<bool>(1)}
 }
 
 func (h HTTP2Conn) requestFields(method string, absoluteURL string, headers Header, length int) (Array<hpack.Field>, error) {
@@ -221,6 +221,17 @@ func (h HTTP2Conn) Open(ctx context.Context, method string, absoluteURL string, 
     result.idle = settings.IdleTimeout
     result.stops = stops
     result.h2.push(h2Reader{conn: h, ticket: ticket, pipe: pipe, wake: wake, ctx: streamCtx, settled: false})
+    let length, declared = result.headers.Get("content-length")
+    if declared {
+        let size, sizeErr = decimal(length)
+        if sizeErr == nil && size > result.limit {
+            return emptyResponseStream(), result.failHTTP2(error("http.Client: body too large"))
+        }
+        if sizeErr == nil && size > 0 && result.status == 205 {
+            return emptyResponseStream(), result.failHTTP2(error("http.Client: 205 forbids content"))
+        }
+        _ = sizeErr
+    }
     let ended, trailers = pipe.withLock(func(p mut h2Pipe) (bool, Header) {
         return p.finished && p.data.len() == 0 && p.failure == nil, clone(p.trailers)
     })
@@ -271,7 +282,7 @@ func (h HTTP2Conn) submit(ctx context.Context, method string, absoluteURL string
     }
     let done = channel<h2Result>(1)
     var slot = Array<h2Request>{}
-    slot.push(h2Request{ticket: 0, wake: false, fields: fields, body: payload, head: method == "HEAD", done: done, streamed: streamed, pipe: pipe, wake2: wake})
+    slot.push(h2Request{ticket: 0, wake: false, fields: fields, body: payload, head: method == "HEAD", done: done, streamed: streamed, pipe: pipe, notify: wake})
     let work = h.work
     let limit = h.limits.MaxStreams + h.limits.MaxWaiters
     let ticket, admitErr = h.shared.withLock(func(s mut h2Shared) (int, error) {
@@ -304,9 +315,7 @@ func (h HTTP2Conn) submit(ctx context.Context, method string, absoluteURL string
             return result.response, ticket, result.failure
         }
         case ctx.Done().receive() {
-            h.shared.withLock(func(s mut h2Shared) {
-                s.inFlight -= 1
-            })
+            h.release()
             h.abandon(ticket)
             return emptyClientResponse(), 0, h2Reason(ctx.Err(), error("context deadline exceeded"))
         }
@@ -335,8 +344,11 @@ func (r mut ResponseStream) readHTTP2(buf mut []byte) (int, error) {
         return 0, nil
     }
     for {
-        let room = buf.len()
-        let chunk, finished, trailers, failure = r.h2[0].pipe.withLock(func(p mut h2Pipe) (Array<byte>, bool, Header, error) {
+        var room = buf.len()
+        if r.limit - r.total < room {
+            room = r.limit - r.total
+        }
+        let chunk, waiting, finished, trailers, failure = r.h2[0].pipe.withLock(func(p mut h2Pipe) (Array<byte>, bool, bool, Header, error) {
             var taken = Array<byte>{}
             for taken.len() < room && p.position < p.data.len() {
                 taken.push(p.data[p.position])
@@ -355,16 +367,18 @@ func (r mut ResponseStream) readHTTP2(buf mut []byte) (int, error) {
                 p.position = 0
             }
             let ended = p.finished && p.position == p.data.len()
+            let more = p.position < p.data.len()
             if ended {
-                return taken, ended, clone(p.trailers), p.failure
+                return taken, more, ended, clone(p.trailers), p.failure
             }
-            return taken, ended, NewHeader(), p.failure
+            return taken, more, ended, NewHeader(), p.failure
         })
+        if chunk.len() == 0 && room == 0 && waiting {
+            _ = failure
+            return 0, r.failHTTP2(error("http.Client: body too large"))
+        }
         if chunk.len() > 0 {
             _ = failure
-            if chunk.len() > r.limit - r.total {
-                return 0, r.failHTTP2(error("http.Client: body too large"))
-            }
             for i, value in chunk {
                 buf[i] = value
             }
@@ -372,6 +386,7 @@ func (r mut ResponseStream) readHTTP2(buf mut []byte) (int, error) {
             return chunk.len(), nil
         }
         if failure != nil {
+            r.h2[0].settled = true
             return 0, r.failHTTP2(failure)
         }
         if finished {

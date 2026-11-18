@@ -463,6 +463,13 @@ func script(p mut Peer, mode string) error {
         p.send(0, 1, long, ten[:])?
         let head, _ = p.request()?
         p.head(head, 5, five[:])?
+        let huge, _ = p.request()?
+        let hundred = Array<hpack.Field>{pair(":status", "200"), pair("content-length", "100")}
+        p.head(huge, 4, hundred[:])?
+        let cross, _ = p.request()?
+        p.head(cross, 4, ok[:])?
+        let twelve = strings.Bytes("abcdefghijkl")
+        p.send(0, 1, cross, twelve[:])?
         let last, _ = p.request()?
         p.answer(last, "200", "still fine")?
     } else if mode == "zerowindow" {
@@ -683,6 +690,14 @@ func run() error {
         let headStream = conn.Open(ctx, "HEAD", "https://example.test/head", http.NewHeader(), empty[:], config)?
         let _, headComplete = headStream.Trailers()
         println("head " + strconv.Itoa(headStream.StatusCode()) + " complete=" + strconv.FormatBool(headComplete))
+        var small = http.DefaultStreamConfig()
+        small.MaxBodyBytes = 10
+        let _, hugeErr = conn.Open(ctx, "GET", "https://example.test/huge", http.NewHeader(), empty[:], small)
+        println("huge " + message(hugeErr))
+        var crossing = conn.Open(ctx, "GET", "https://example.test/cross", http.NewHeader(), empty[:], small)?
+        let crossN, crossErr = crossing.Read(buf[:])
+        let afterN, afterErr = crossing.Read(buf[:])
+        println("cross read " + strconv.Itoa(crossN) + " " + message(crossErr) + " then " + strconv.Itoa(afterN) + " " + message(afterErr))
         println(show(conn, ctx, "GET", "/last", empty[:]))
     } else if mode == "validation" {
         println(show(conn, ctx, "CONNECT", "/x", empty[:]))
