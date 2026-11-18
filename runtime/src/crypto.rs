@@ -29,7 +29,10 @@ pub(crate) fn random_bytes(size: usize) -> Result<Vec<u8>, String> {
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-static FAIL_RANDOM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    // Per thread, so the failure test cannot break other tests running at the same time.
+    static FAIL_RANDOM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// # Safety
 /// Each slice must satisfy the storage rule of `bytes`.
@@ -76,7 +79,7 @@ fn fill(buffer: &mut [u8]) -> std::io::Result<()> {
         fn syscall(number: i64, ...) -> i64;
     }
     #[cfg(test)]
-    if FAIL_RANDOM.load(std::sync::atomic::Ordering::SeqCst) {
+    if FAIL_RANDOM.with(std::cell::Cell::get) {
         return Err(std::io::Error::other("injected failure"));
     }
     let mut filled = 0;
@@ -175,9 +178,9 @@ mod tests {
     ))]
     #[test]
     fn a_failing_source_returns_an_error_and_no_bytes() {
-        FAIL_RANDOM.store(true, std::sync::atomic::Ordering::SeqCst);
+        FAIL_RANDOM.with(|fail| fail.set(true));
         let result = random_bytes(16);
-        FAIL_RANDOM.store(false, std::sync::atomic::Ordering::SeqCst);
+        FAIL_RANDOM.with(|fail| fail.set(false));
         assert_eq!(
             result,
             Err("crypto/rand.Bytes: injected failure".to_string())
