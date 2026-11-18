@@ -8,6 +8,14 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Streamed content decoding
+
+- `OpenDecoded` on `Client`, `Pool`, `HTTP2Conn` and `https.AutoClient`
+  unpacks a gzip answer while it streams (§37.52), so memory does not grow with
+  its size. `http.DecodeStream` unpacks a stream opened another way, and
+  `http.DecodeHeaders` prepares the request headers.
+- The same limits and errors as `DoDecoded` apply, checked as the body is read.
+
 ### Automatic HTTP/2 for HTTPS
 
 - `https.NewAutoClient` and `https.NewDefaultAutoClient` in the `tls` package

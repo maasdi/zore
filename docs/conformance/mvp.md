@@ -248,6 +248,16 @@ independent Python escaping/parser assertions. Contextual template rendering
 remains a separate application-driven decision under Q16; the primitive does
 not validate URLs or serialize JavaScript/CSS.
 
+## Streamed content decoding — issue #309
+
+Locked §37.52 delivers `DecodeHeaders`, `DecodeStream` and `OpenDecoded` on
+`Client`, `Pool`, `HTTP2Conn` and `https.AutoClient`.
+[tests/codegen/http_decode.rs](../../tests/codegen/http_decode.rs) covers the
+§37.46 cases through streams, a pooled stream, and memory that stays under
+1 MiB while a 4 MiB body is unpacked;
+[tests/driver/http_client.rs](../../tests/driver/http_client.rs) unpacks a gzip
+body from Node.js over HTTP/2 and HTTP/1.1.
+
 ## Automatic HTTP/2 — issue #290
 
 Locked §37.50 delivers `https.AutoClient`, `AutoStats`, `MaxAutoOrigins`,

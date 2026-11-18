@@ -9,7 +9,8 @@ shutdown and the pooling guide), redirects in `codegen/http_redirect.rs`
 (scripted chains, rewriting, credential removal, limits and the redirect guide),
 retries in `codegen/http_retry.rs` (retried and returned outcomes, methods,
 waits, budgets and the retry guide), gzip decoding in `codegen/http_decode.rs`
-(encodings, broken data, size and ratio limits and the decoding guide),
+(encodings, broken data, size and ratio limits, streamed decoding and its
+memory bound, and the decoding guide),
 proxies in `codegen/http_proxy.rs` (absolute-form requests, CONNECT tunnels,
 credentials and the proxy guide), header compression in `codegen/hpack.rs`
 (RFC 7541 examples, malformed blocks, limits and the guide), HTTP/2 connections in
