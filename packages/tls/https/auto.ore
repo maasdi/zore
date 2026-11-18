@@ -193,12 +193,8 @@ func (a AutoClient) Do(ctx context.Context, method string, absoluteURL string, h
             let _, source = route.direct.pop()
             return client.Exchange(bounded, conn{source: source}, method, absoluteURL, headers, body)
         }
-        let shared = route.shared[0]
-        let response, err = shared.Do(bounded, method, absoluteURL, headers, body)
-        if route.oneOff {
-            shared.Close()
-        }
-        if err == nil || retried || !retryable(err) {
+        let response, err = route.shared[0].Do(bounded, method, absoluteURL, headers, body)
+        if !a.again(route, err, retried) {
             return response, err
         }
         _ = err
@@ -221,12 +217,8 @@ func (a AutoClient) Open(ctx context.Context, method string, absoluteURL string,
             let _, source = route.direct.pop()
             return client.OpenExchange(ctx, conn{source: source}, method, absoluteURL, headers, body, config)
         }
-        let shared = route.shared[0]
-        let stream, err = shared.Open(ctx, method, absoluteURL, headers, body, config)
-        if route.oneOff {
-            shared.Close()
-        }
-        if err == nil || retried || !retryable(err) {
+        let stream, err = route.shared[0].Open(ctx, method, absoluteURL, headers, body, config)
+        if !a.again(route, err, retried) {
             return stream, err
         }
         _ = err
@@ -298,6 +290,13 @@ func (a AutoClient) route(ctx context.Context, target url.AbsoluteURL) (autoRout
             return a.connect(ctx, origin, target, autoRelease{state: a.state, origin: origin, armed: false})
         }
     }
+}
+
+func (a AutoClient) again(route autoRoute, err error, retried bool) bool {
+    if route.oneOff {
+        route.shared[0].Close()
+    }
+    return err != nil && !retried && retryable(err)
 }
 
 func retryable(err error) bool {
