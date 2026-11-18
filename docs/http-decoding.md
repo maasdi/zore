@@ -64,7 +64,9 @@ answer, use `OpenDecoded` instead. It takes the same arguments plus a
 stays small however big the answer is. `Client`, `Pool`, `HTTP2Conn` and the
 `tls` package's `https.AutoClient` all have it.
 
-The same rules apply: the limits below are checked as you read, a broken file
+The same rules apply: the limits below are checked as you read (when the
+server does not say how big the packed answer is, the expansion limit is checked
+against what has arrived so far), a broken file
 fails part-way after the bytes unpacked so far, and answers that are not gzip
 come back unchanged. To unpack a stream you opened yourself with
 `Accept-Encoding: gzip`, pass it to `http.DecodeStream`.

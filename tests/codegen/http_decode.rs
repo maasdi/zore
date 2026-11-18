@@ -88,6 +88,21 @@ func answer(method string, path string) Array<byte> {
         for var i = 0; i < 4; i += 1 { out.push(whole[i]) }
         return out
     }
+    if path == "/chunked" || path == "/chunkedbomb" || path == "/chunkedempty" {
+        var packed = gzText("hello world")
+        if path == "/chunkedbomb" {
+            let big = zeros(1048576)
+            packed = gz(big[:])
+        }
+        var out = strings.Bytes("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n")
+        if path != "/chunkedempty" {
+            for b in strings.Bytes(strconv.FormatInt(packed.len(), 16) + "\r\n") { out.push(b) }
+            for b in packed { out.push(b) }
+            for b in strings.Bytes("\r\n") { out.push(b) }
+        }
+        for b in strings.Bytes("0\r\n\r\n") { out.push(b) }
+        return out
+    }
     if path == "/moved" { return strings.Bytes("HTTP/1.1 302 Found\r\nLocation: /gzip\r\nContent-Length: 0\r\n\r\n") }
     if path == "/empty" { return respond(gzipped, Array<byte>{}, head) }
     if path == "/bomb" {
@@ -265,6 +280,13 @@ func run() error {
     expectStream(client, "/bomb", defaults, "error http.Client: decoded body expands too much")
     expectStream(client, "/bomb", small, "error http.Client: decoded body too large")
     expectStream(client, "/bomb", roomy, "1048576 bytes complete=true")
+    expectStream(client, "/chunked", defaults, "hello world complete=true")
+    expectStream(client, "/chunkedempty", defaults, " complete=true")
+    expectStream(client, "/chunkedbomb", defaults, "error http.Client: decoded body expands too much")
+    var unbounded = defaults
+    unbounded.MaxRatio = 4611686018427387903
+    unbounded.MaxBytes = 2097152
+    expectStream(client, "/chunkedbomb", unbounded, "1048576 bytes complete=true")
     let streamedPartial = client.OpenDecoded(context.Background(), "GET", "https://a.test/partial", http.NewHeader(), nothing[:], http.DefaultStreamConfig(), defaults)?
     check(streamedPartial.StatusCode() == 206 && streamedPartial.Headers().Values("Content-Encoding").len() == 1, "streamed 206 unchanged")
     let _ = drain(log)

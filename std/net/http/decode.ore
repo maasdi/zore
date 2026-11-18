@@ -61,6 +61,25 @@ func decodeHeaders(headers Header) (Header, error) {
     return request, nil
 }
 
+func contentCoding(headers Header) (string, error) {
+    let encodings = headers.Values("Content-Encoding")
+    if encodings.len() == 0 {
+        return "identity", nil
+    }
+    let encoding = strings.ToLower(strings.Trim(encodings[0], " \t"))
+    if encodings.len() > 1 || (encoding != "gzip" && encoding != "x-gzip" && encoding != "identity") {
+        return "", error("http.Client: unsupported content encoding")
+    }
+    return encoding, nil
+}
+
+func decodeLimit(settings DecodeConfig, encodedLength int) int {
+    if encodedLength <= settings.MaxBytes / settings.MaxRatio {
+        return encodedLength * settings.MaxRatio
+    }
+    return settings.MaxBytes
+}
+
 func DecodeHeaders(headers Header, config DecodeConfig) (Header, error) {
     decodeSettings(config)?
     return decodeHeaders(headers)
@@ -69,13 +88,12 @@ func DecodeHeaders(headers Header, config DecodeConfig) (Header, error) {
 func Decode(ctx context.Context, response own ClientResponse, config DecodeConfig) (ClientResponse, error) {
     let settings = decodeSettings(config)?
     var result = response
-    let encodings = result.Headers.Values("Content-Encoding")
-    if encodings.len() == 0 || result.Body.len() == 0 || result.StatusCode == 206 {
+    if result.Headers.Values("Content-Encoding").len() == 0 || result.Body.len() == 0 || result.StatusCode == 206 {
         return result, nil
     }
-    let encoding = strings.ToLower(strings.Trim(encodings[0], " \t"))
-    if encodings.len() > 1 || (encoding != "gzip" && encoding != "x-gzip" && encoding != "identity") {
-        return emptyClientResponse(), error("http.Client: unsupported content encoding")
+    let encoding, codingErr = contentCoding(result.Headers)
+    if codingErr != nil {
+        return emptyClientResponse(), codingErr
     }
     if encoding == "identity" {
         return result, nil
@@ -84,10 +102,7 @@ func Decode(ctx context.Context, response own ClientResponse, config DecodeConfi
     if encodedLength > gzip.MaxBytes {
         return emptyClientResponse(), error("http.Client: encoded body too large to decode")
     }
-    var limit = settings.MaxBytes
-    if encodedLength <= limit / settings.MaxRatio {
-        limit = encodedLength * settings.MaxRatio
-    }
+    let limit = decodeLimit(settings, encodedLength)
     var reader = gzip.NewReader(encodedBody{data: result.Body, position: 0}, encodedLength, limit)?
     var decoded = Array<byte>{}
     var buf = Array<byte>{}
@@ -120,15 +135,13 @@ func Decode(ctx context.Context, response own ClientResponse, config DecodeConfi
 }
 
 func (c Client) DoDecoded(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config DecodeConfig) (ClientResponse, error) {
-    decodeSettings(config)?
-    let request = decodeHeaders(headers)?
+    let request = DecodeHeaders(headers, config)?
     let response = c.Do(ctx, method, absoluteURL, request, body)?
     return Decode(ctx, response, config)
 }
 
 func (p Pool) DoDecoded(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, config DecodeConfig) (ClientResponse, error) {
-    decodeSettings(config)?
-    let request = decodeHeaders(headers)?
+    let request = DecodeHeaders(headers, config)?
     let response = p.Do(ctx, method, absoluteURL, request, body)?
     return Decode(ctx, response, config)
 }
@@ -145,13 +158,16 @@ type decodeSource struct {
 
 func (s mut decodeSource) Read(buf mut []byte) (int, error) {
     let n, err = s.stream.Read(buf)
-    let finished = err == io.EOF
-    let trailers, _ = s.stream.Trailers()
+    if err == io.EOF {
+        let trailers, _ = s.stream.Trailers()
+        s.meter.withLock(func(m mut decodeMeter) {
+            m.compressed += n
+            m.trailers = clone(trailers)
+        })
+        return n, err
+    }
     s.meter.withLock(func(m mut decodeMeter) {
         m.compressed += n
-        if finished {
-            m.trailers = clone(trailers)
-        }
     })
     return n, err
 }
@@ -160,31 +176,43 @@ type decodeState struct {
     reader gzip.Reader
     meter Mutex<decodeMeter>
     ratio int
+    running bool
+    capped bool
 }
 
 func DecodeStream(stream own ResponseStream, config DecodeConfig) (ResponseStream, error) {
     var source = stream
     let settings = decodeSettings(config)?
-    let encodings = source.headers.Values("Content-Encoding")
-    if encodings.len() == 0 || source.done || source.status == 206 {
+    if source.headers.Values("Content-Encoding").len() == 0 || source.done || source.status == 206 {
         return source, nil
     }
-    let encoding = strings.ToLower(strings.Trim(encodings[0], " \t"))
-    if encodings.len() > 1 || (encoding != "gzip" && encoding != "x-gzip" && encoding != "identity") {
-        return emptyResponseStream(), error("http.Client: unsupported content encoding")
-    }
+    let encoding = contentCoding(source.headers)?
     if encoding == "identity" {
         return source, nil
+    }
+    var limit = settings.MaxBytes
+    var running = true
+    let length, declared = source.headers.Get("Content-Length")
+    if declared {
+        let encodedLength, lengthErr = decimal(length)
+        if lengthErr == nil && encodedLength > gzip.MaxBytes {
+            return emptyResponseStream(), error("http.Client: encoded body too large to decode")
+        }
+        if lengthErr == nil {
+            limit = decodeLimit(settings, encodedLength)
+            running = false
+        }
+        _ = lengthErr
     }
     var result = emptyResponseStream()
     result.status = source.status
     result.headers = clone(source.headers)
     let _ = result.headers.Del("Content-Encoding")
     let _ = result.headers.Del("Content-Length")
-    result.limit = settings.MaxBytes
     let meter = mutex(decodeMeter{compressed: 0, trailers: NewHeader()})
-    let reader = gzip.NewReader(decodeSource{stream: source, meter: meter}, gzip.MaxBytes, settings.MaxBytes)?
-    result.gunzip.push(decodeState{reader: reader, meter: meter, ratio: settings.MaxRatio})
+    var reader = gzip.NewReader(decodeSource{stream: source, meter: meter}, gzip.MaxBytes, limit)?
+    reader.SetStreaming(true)
+    result.gunzip.push(decodeState{reader: reader, meter: meter, ratio: settings.MaxRatio, running: running, capped: limit < settings.MaxBytes})
     return result, nil
 }
 
@@ -194,16 +222,21 @@ func (r mut ResponseStream) readDecoded(buf mut []byte) (int, error) {
     }
     let n, err = r.gunzip[0].reader.Read(buf)
     r.total += n
-    let compressed, trailers = r.gunzip[0].meter.withLock(func(m mut decodeMeter) (int, Header) {
-        return m.compressed, clone(m.trailers)
+    let compressed = r.gunzip[0].meter.withLock(func(m mut decodeMeter) int {
+        return m.compressed
     })
-    if r.total > compressed * r.gunzip[0].ratio {
+    let ratio = r.gunzip[0].ratio
+    let whole = r.total / ratio
+    if r.gunzip[0].running && (whole > compressed || (whole == compressed && r.total % ratio > 0)) {
         _ = err
         return 0, r.failDecoded(error("http.Client: decoded body expands too much"))
     }
-    if err == io.EOF {
+    if err == io.EOF || (err == error("gzip: truncated stream") && compressed == 0) {
+        _ = err
         r.done = true
-        r.trailers = trailers
+        r.trailers = r.gunzip[0].meter.withLock(func(m mut decodeMeter) Header {
+            return clone(m.trailers)
+        })
         r.gunzip = Array<decodeState>{}
         r.release()
         if n > 0 {
@@ -213,15 +246,19 @@ func (r mut ResponseStream) readDecoded(buf mut []byte) (int, error) {
     }
     if err == error("gzip: output byte limit exceeded") {
         _ = err
+        if r.gunzip[0].capped {
+            return 0, r.failDecoded(error("http.Client: decoded body expands too much"))
+        }
         return 0, r.failDecoded(error("http.Client: decoded body too large"))
     }
-    if err != nil {
-        if n > 0 {
-            r.pendingDecode = err
-            return n, nil
-        }
+    if err == error("gzip: compressed byte limit exceeded") {
+        _ = err
+        return 0, r.failDecoded(error("http.Client: encoded body too large to decode"))
+    }
+    if err != nil && n == 0 {
         return 0, r.failDecoded(err)
     }
+    _ = err
     return n, nil
 }
 

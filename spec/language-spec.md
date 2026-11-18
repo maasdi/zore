@@ -11526,6 +11526,7 @@ in Zore without a native provider or new dependencies.
 | `MaxMembers = 1024` | Maximum concatenated gzip members per reader |
 | `NewReader(source own io.Reader, compressedLimit int, outputLimit int) (Reader, error)` | Takes ownership; validates limits without reading; parses lazily |
 | `(r mut Reader) Read(buf mut []byte) (int, error)` | Streams decoded bytes, with sticky terminal errors; empty reads return `(0, nil)` |
+| `(r mut Reader) SetStreaming(streaming bool)` | Chooses whether `Read` returns available output instead of filling the buffer |
 | `(r own Reader) Close() error` | Returns a prior failure, otherwise nil; drops source without draining or validating unread input |
 | `NewWriter(sink own io.Writer, inputLimit int, compressedLimit int) (Writer, error)` | Takes ownership; validates limits without writing |
 | `(w mut Writer) Write(data []byte) (int, error)` | Accepts input in bounded chunks and writes compressed blocks; empty writes succeed unless already failed or finished |
@@ -11559,7 +11560,9 @@ truncation and non-member trailing bytes fail. An empty source is truncated;
 an empty member is valid. Header scans are bounded by the compressed ceiling.
 An all-zero unused distance alphabet is accepted until a length needs it.
 Padding bits at block/member boundaries are ignored as the format permits.
-A stream is validated only after a nonempty `Read` returns `io.EOF`; bytes
+After `SetStreaming(true)`, `Read` returns as soon as it has at least one byte
+and producing more would read the source again, so output arrives as input
+does; otherwise it fills the buffer. A stream is validated only after a nonempty `Read` returns `io.EOF`; bytes
 returned earlier, including bytes returned with a later error, are unverified
 partial output. Reading exactly the expected payload length is insufficient.
 `Close` does not substitute for reading to EOF. Member count and byte ceilings
@@ -13695,10 +13698,15 @@ headers without `Content-Encoding` and `Content-Length`, and a body that yields
 unpacked bytes as `Read` is called. The packed body is read only as needed, so
 memory does not grow with the body size.
 
-Limits are checked as the body is read: more than `MaxBytes` unpacked bytes
-fails with `http.Client: decoded body too large`, and more unpacked bytes than
-`MaxRatio` times the packed bytes read so far fails with
-`http.Client: decoded body expands too much`. Broken data fails with the gzip
+Limits are checked as the body is read. When the response declares its packed
+`Content-Length`, the unpacked size is bounded exactly as in §37.46 from that
+length. Otherwise more than `MaxBytes` unpacked bytes fails with
+`http.Client: decoded body too large`, and more unpacked bytes than `MaxRatio`
+times the packed bytes read so far fails with
+`http.Client: decoded body expands too much`; very large `MaxRatio` values do
+not overflow. A packed body above 1 GiB fails with
+`http.Client: encoded body too large to decode`. A gzip body that turns out to
+be empty is returned as an empty, complete body. Broken data fails with the gzip
 reader's error, such as `gzip: checksum mismatch` or `gzip: truncated stream`,
 after the bytes already unpacked; concatenated members are joined and other
 trailing data is an error. Errors of the underlying stream, including its
@@ -13737,7 +13745,9 @@ Compiler impact: bundled `std/net/http` and `tls/https` sources only; no runtime
 or syntax changes. Conformance: a scripted transport for gzip and x-gzip,
 concatenated members, plain, identity, empty, `HEAD` and 206 responses,
 unsupported and listed encodings, checksum, truncation and trailing-data
-failures, ratio and size limits with the exact limit, a caller
+failures, ratio and size limits with the exact limit, chunked bodies including
+an empty one, the ratio limit without a declared length, a `MaxRatio` near the
+integer maximum, a caller
 `Accept-Encoding` and invalid configuration that send nothing, `DecodeStream`
 on an opened stream and a pooled stream; memory that stays under 1 MiB while a
 4 MiB body is unpacked; and, against Node.js, a gzip body unpacked while it
