@@ -18,8 +18,9 @@ At most one such committed span per class stays warm; subsequent empty spans
 are discarded. A partially used span and slots retained in a sleeping thread's
 bounded cache cannot be reclaimed by this policy.
 
-Linux/macOS allocate spans as anonymous mappings and advise unused pages with
-`MADV_DONTNEED`; Windows reserves and commits with `VirtualAlloc`, decommits
+Linux/macOS allocate spans as anonymous mappings. Linux discards unused pages
+with `MADV_DONTNEED`; macOS marks them `MADV_FREE_REUSABLE` and notifies the
+kernel with `MADV_FREE_REUSE` before reuse. Windows reserves and commits with `VirtualAlloc`, decommits
 with `VirtualFree(MEM_DECOMMIT)`, and recommits before reuse. Address ranges and
 page-table entries stay reserved for process lifetime. Resident-memory effects
 of the Unix advice depend on the host. Unsupported hosts retain their previous

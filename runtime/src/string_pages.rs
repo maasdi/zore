@@ -42,11 +42,8 @@ pub(super) fn discard(base: usize) -> bool {
     }
     #[cfg(all(not(miri), any(target_os = "linux", target_os = "macos")))]
     {
-        unsafe extern "C" {
-            fn madvise(addr: *mut u8, len: usize, advice: i32) -> i32;
-        }
-        // SAFETY: this mapping is page-aligned, reserved, and exclusively free.
-        unsafe { madvise(std::ptr::with_exposed_provenance_mut(base), SPAN, 4) == 0 }
+        let advice = if cfg!(target_os = "macos") { 7 } else { 4 };
+        advise(base, advice)
     }
     #[cfg(all(not(miri), windows))]
     {
@@ -61,14 +58,25 @@ pub(super) fn discard(base: usize) -> bool {
 }
 
 pub(super) fn commit(base: usize) {
+    #[cfg(all(not(miri), target_os = "macos"))]
+    let _ = advise(base, 8);
     #[cfg(all(not(miri), windows))]
     if unsafe { VirtualAlloc(std::ptr::with_exposed_provenance_mut(base), SPAN, 0x1000, 4) }
         .is_null()
     {
         out_of_memory();
     }
-    #[cfg(not(all(not(miri), windows)))]
+    #[cfg(not(all(not(miri), any(windows, target_os = "macos"))))]
     let _ = base;
+}
+
+#[cfg(all(not(miri), any(target_os = "linux", target_os = "macos")))]
+fn advise(base: usize, advice: i32) -> bool {
+    unsafe extern "C" {
+        fn madvise(addr: *mut u8, len: usize, advice: i32) -> i32;
+    }
+    // SAFETY: the page-aligned mapping remains reserved under the class lock.
+    unsafe { madvise(std::ptr::with_exposed_provenance_mut(base), SPAN, advice) == 0 }
 }
 
 #[cfg(all(not(miri), windows))]
