@@ -1547,15 +1547,71 @@ mod tests {
         let _serial = serial();
         fn rss() -> usize {
             #[cfg(target_os = "linux")]
-            return std::fs::read_to_string("/proc/self/statm")
-                .unwrap()
-                .split_whitespace()
-                .nth(1)
-                .unwrap()
-                .parse::<usize>()
-                .unwrap()
-                * PAGE;
-            #[cfg(not(target_os = "linux"))]
+            {
+                unsafe extern "C" {
+                    fn getpagesize() -> i32;
+                }
+                // SAFETY: getpagesize has no preconditions.
+                let page_size = unsafe { getpagesize() } as usize;
+                std::fs::read_to_string("/proc/self/statm")
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap()
+                    * page_size
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let output = std::process::Command::new("/bin/ps")
+                    .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .trim()
+                    .parse::<usize>()
+                    .unwrap()
+                    * 1024
+            }
+            #[cfg(windows)]
+            {
+                #[repr(C)]
+                struct Counters {
+                    size: u32,
+                    faults: u32,
+                    values: [usize; 8],
+                }
+                #[link(name = "kernel32")]
+                unsafe extern "system" {
+                    fn GetCurrentProcess() -> *mut std::ffi::c_void;
+                    fn K32GetProcessMemoryInfo(
+                        process: *mut std::ffi::c_void,
+                        counters: *mut Counters,
+                        size: u32,
+                    ) -> i32;
+                }
+                let mut counters = Counters {
+                    size: size_of::<Counters>() as u32,
+                    faults: 0,
+                    values: [0; 8],
+                };
+                // SAFETY: the current process is valid and counters has the declared writable size.
+                assert_ne!(
+                    unsafe {
+                        K32GetProcessMemoryInfo(
+                            GetCurrentProcess(),
+                            &mut counters,
+                            size_of::<Counters>() as u32,
+                        )
+                    },
+                    0
+                );
+                counters.values[1]
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
             0
         }
         release_all();
@@ -1578,7 +1634,7 @@ mod tests {
         worker.join().unwrap();
         let after = rss();
         println!("resident bytes: before={before}, peak={peak}, after={after}");
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         assert!(peak.saturating_sub(after) > 24 * 1024 * 1024);
         assert_eq!(live_buffers(), 0);
     }

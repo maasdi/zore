@@ -99,7 +99,7 @@ jobs:
           clang --version
           rustc --version
       - name: Reclaimed string span RSS
-        if: needs.routes.outputs.full == 'true' && runner.os == 'Linux'
+        if: needs.routes.outputs.full == 'true'
         run: cargo test --locked -p zore-runtime million_short_strings_return_resident_pages -- --ignored --nocapture
       - name: Regex differential oracle
         if: needs.routes.outputs.full == 'true'

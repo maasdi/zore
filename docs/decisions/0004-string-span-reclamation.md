@@ -43,6 +43,7 @@ Tests cover discard/recommit over repeated cycles, live lookup/retain/release
 racing with discard of other spans, thread exit and `release_all` after discard.
 The manual million-short-string resident-memory measurement runs with
 `cargo test --locked -p zore-runtime million_short_strings_return_resident_pages
--- --ignored --nocapture`; it asserts a substantial RSS decrease on Linux.
+-- --ignored --nocapture`; it asserts a substantial RSS decrease on Linux and
+Windows and records macOS RSS without requiring immediate advisory reclamation.
 Native supported-host tests exercise actual OS primitives; Miri checks the
 allocator logic and pointer provenance using its simulated discard path.
