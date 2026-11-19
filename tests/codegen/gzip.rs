@@ -393,6 +393,40 @@ fn gzip_unverified_partial_output_is_preserved_with_checksum_truncation_and_limi
     );
 }
 
+#[test]
+fn gzip_streaming_reads_return_available_output_without_filling_the_buffer() {
+    succeeds(
+        r#"func main() {
+    let done = channel<int>(4)
+    let valid = Array<byte>{31, 139, 8, 0, 0, 0, 0, 0, 4, 3, 1, 3, 0, 252, 255, 97, 98, 99, 194, 65, 36, 53, 3, 0, 0, 0}
+    var whole = gzip.NewReader(feed(valid[:], 0, done), 100, 100)?
+    var buf = Array<byte>{0, 0, 0, 0, 0, 0}
+    let filled, _ = whole.Read(buf[:])
+    check(filled == 3, "default read fills what it can")
+    var eager = gzip.NewReader(feed(valid[:], 0, done), 100, 100)?
+    eager.SetStreaming(true)
+    var text = ""
+    var reads = 0
+    for {
+        let n, err = eager.Read(buf[:])
+        for var i = 0; i < n; i += 1 { text += string(rune(buf[i])) }
+        if n > 0 { reads += 1 }
+        if err == io.EOF { break }
+        check(err == nil, "streaming read error")
+        check(n <= 1, "streaming read waited for more input")
+    }
+    check(text == "abc" && reads == 3, "streaming output")
+    check(eager.Close() == nil, "verified")
+    let _ = whole.Close()
+    let _, _ = done.receive()
+    let _, _ = done.receive()
+    println("ok")
+}
+"#,
+        false,
+    );
+}
+
 const LEVELS: &str = r#"
 
 type Collect struct { data Array<byte>; out channel<Array<byte>> }

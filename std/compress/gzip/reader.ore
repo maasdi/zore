@@ -33,11 +33,12 @@ type Reader struct {
     crc int
     phase int
     err error
+    streaming bool
 }
 
 func NewReader(source own io.Reader, compressedLimit int, outputLimit int) (Reader, error) {
     let decoder, _ = flate.NewDecoder(MaxBytes, MaxBytes)
-    var reader = Reader{input: input{source: source, compressedLimit: compressedLimit, compressed: 0, chunk: zeros(4096), cursor: 0, used: 0, pending: nil}, decoder: decoder, outputLimit: outputLimit, output: 0, members: 0, memberSize: 0, crc: 4294967295, phase: headerPhase, err: nil}
+    var reader = Reader{input: input{source: source, compressedLimit: compressedLimit, compressed: 0, chunk: zeros(4096), cursor: 0, used: 0, pending: nil}, decoder: decoder, outputLimit: outputLimit, output: 0, members: 0, memberSize: 0, crc: 4294967295, phase: headerPhase, err: nil, streaming: false}
     if !validLimit(compressedLimit) || !validLimit(outputLimit) {
         reader.err = error("gzip: invalid byte limit")
     }
@@ -208,6 +209,9 @@ func (r mut Reader) Read(buf mut []byte) (int, error) {
     }
     var count = 0
     for count < buf.len() {
+        if r.streaming && count > 0 && r.input.cursor == r.input.used && r.input.pending == nil {
+            return count, nil
+        }
         let value, err = r.next()
         if err != nil {
             r.err = err
@@ -224,6 +228,10 @@ func (r mut Reader) Read(buf mut []byte) (int, error) {
         r.crc = crcByte(r.crc, value)
     }
     return count, nil
+}
+
+func (r mut Reader) SetStreaming(streaming bool) {
+    r.streaming = streaming
 }
 
 func (r own Reader) Close() error {

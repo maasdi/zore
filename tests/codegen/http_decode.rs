@@ -5,6 +5,7 @@ const SCRIPTED_DECODING: &str = r#"package main
 import "std/compress/gzip"
 import "std/context"
 import "std/errors"
+import "std/io"
 import "std/net/http"
 import "std/net/url"
 import "std/strconv"
@@ -87,6 +88,21 @@ func answer(method string, path string) Array<byte> {
         for var i = 0; i < 4; i += 1 { out.push(whole[i]) }
         return out
     }
+    if path == "/chunked" || path == "/chunkedbomb" || path == "/chunkedempty" {
+        var packed = gzText("hello world")
+        if path == "/chunkedbomb" {
+            let big = zeros(1048576)
+            packed = gz(big[:])
+        }
+        var out = strings.Bytes("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n")
+        if path != "/chunkedempty" {
+            for b in strings.Bytes(strconv.FormatInt(packed.len(), 16) + "\r\n") { out.push(b) }
+            for b in packed { out.push(b) }
+            for b in strings.Bytes("\r\n") { out.push(b) }
+        }
+        for b in strings.Bytes("0\r\n\r\n") { out.push(b) }
+        return out
+    }
     if path == "/moved" { return strings.Bytes("HTTP/1.1 302 Found\r\nLocation: /gzip\r\nContent-Length: 0\r\n\r\n") }
     if path == "/empty" { return respond(gzipped, Array<byte>{}, head) }
     if path == "/bomb" {
@@ -142,6 +158,33 @@ func get(client http.Client, method string, path string, config http.DecodeConfi
 func body(response http.ClientResponse) string {
     let text, _ = strings.FromBytes(response.Body[:])
     return text
+}
+func streamed(client http.Client, method string, path string, config http.DecodeConfig) (string, error) {
+    let empty = Array<byte>{}
+    var stream = client.OpenDecoded(context.Background(), method, "https://a.test" + path, http.NewHeader(), empty[:], http.DefaultStreamConfig(), config)?
+    var buf = Array<byte>{0, 0, 0, 0, 0, 0, 0}
+    var total = 0
+    var text = ""
+    for {
+        let n, err = stream.Read(buf[:])
+        total += n
+        if text.len() < 64 {
+            for var i = 0; i < n; i += 1 { text += string(rune(buf[i])) }
+        }
+        if err == io.EOF { break }
+        if err != nil { return "", err }
+    }
+    let _, complete = stream.Trailers()
+    var encoded = ""
+    if stream.Headers().Values("Content-Encoding").len() > 0 { encoded = " encoded" }
+    if total > 64 { text = strconv.Itoa(total) + " bytes" }
+    return text + encoded + " complete=" + strconv.FormatBool(complete), nil
+}
+func expectStream(client http.Client, path string, config http.DecodeConfig, want string) {
+    let got, err = streamed(client, "GET", path, config)
+    var line = got
+    if err != nil { line = "error " + failure(err) }
+    check(line == want, "streamed " + path + ": " + line)
 }
 func run() error {
     let defaults = http.DefaultDecodeConfig()
@@ -218,9 +261,55 @@ func run() error {
     check(failure(cancelled) == "context canceled", "Decode stops on cancel")
     let _ = drain(log)
 
+    expectStream(client, "/gzip", defaults, "hello world complete=true")
+    let streamSent = drain(log)
+    check(streamSent.len() == 1 && strings.Contains(streamSent[0], "\r\nAccept-Encoding: gzip"), "stream asks for gzip")
+    expectStream(client, "/xgzip", defaults, "hello world complete=true")
+    expectStream(client, "/concat", defaults, "hello world complete=true")
+    expectStream(client, "/plain", defaults, "plain complete=true")
+    expectStream(client, "/identity", defaults, "same encoded complete=true")
+    expectStream(client, "/empty", defaults, " encoded complete=true")
+    let headStream, headErr = streamed(client, "HEAD", "/gzip", defaults)
+    check(headErr == nil && headStream == " encoded complete=true", "streamed HEAD kept " + headStream)
+    for path in [string; 3]{"/br", "/double", "/twice"} {
+        expectStream(client, path, defaults, "error http.Client: unsupported content encoding")
+    }
+    expectStream(client, "/corrupt", defaults, "error gzip: checksum mismatch")
+    expectStream(client, "/truncated", defaults, "error gzip: truncated stream")
+    expectStream(client, "/trailing", defaults, "error gzip: truncated stream")
+    expectStream(client, "/bomb", defaults, "error http.Client: decoded body expands too much")
+    expectStream(client, "/bomb", small, "error http.Client: decoded body too large")
+    expectStream(client, "/bomb", roomy, "1048576 bytes complete=true")
+    expectStream(client, "/chunked", defaults, "hello world complete=true")
+    expectStream(client, "/chunkedempty", defaults, " complete=true")
+    expectStream(client, "/chunkedbomb", defaults, "error http.Client: decoded body expands too much")
+    var unbounded = defaults
+    unbounded.MaxRatio = 4611686018427387903
+    unbounded.MaxBytes = 2097152
+    expectStream(client, "/chunkedbomb", unbounded, "1048576 bytes complete=true")
+    let streamedPartial = client.OpenDecoded(context.Background(), "GET", "https://a.test/partial", http.NewHeader(), nothing[:], http.DefaultStreamConfig(), defaults)?
+    check(streamedPartial.StatusCode() == 206 && streamedPartial.Headers().Values("Content-Encoding").len() == 1, "streamed 206 unchanged")
+    let _ = drain(log)
+    let _, streamOwned = client.OpenDecoded(context.Background(), "GET", "https://a.test/gzip", asked, nothing[:], http.DefaultStreamConfig(), defaults)
+    check(failure(streamOwned) == "http.Client: client owns Accept-Encoding" && drain(log).len() == 0, "streamed caller Accept-Encoding refused")
+    let _, streamNegative = client.OpenDecoded(context.Background(), "GET", "https://a.test/gzip", http.NewHeader(), nothing[:], http.DefaultStreamConfig(), negative)
+    check(failure(streamNegative) == "http.Client: negative decode configuration" && drain(log).len() == 0, "streamed negative")
+    let wrapped = client.Open(context.Background(), "GET", "https://a.test/gzip", accept, nothing[:], http.DefaultStreamConfig())?
+    var unwrapped = http.DecodeStream(wrapped, defaults)?
+    var piece = Array<byte>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    let unwrappedN, _ = unwrapped.Read(piece[:])
+    check(unwrappedN == 11, "DecodeStream on an opened stream")
+    let _ = drain(log)
+
     let pool = http.NewPool(http.NewClientWithTransport(http.DefaultClientConfig(), Transport{log: log})?, http.DefaultPoolConfig())?
     let pooled = pool.DoDecoded(context.Background(), "GET", "https://a.test/gzip", http.NewHeader(), nothing[:], defaults)?
     check(body(pooled) == "hello world" && pool.Stats().Idle == 1, "pooled decode")
+    var pooledStream = pool.OpenDecoded(context.Background(), "GET", "https://a.test/gzip", http.NewHeader(), nothing[:], http.DefaultStreamConfig(), defaults)?
+    var pooledBuf = Array<byte>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    let pooledN, _ = pooledStream.Read(pooledBuf[:])
+    let _, pooledEnd = pooledStream.Read(pooledBuf[:])
+    _ = pooledEnd
+    check(pooledN == 11 && pooledEnd == io.EOF, "pooled streamed decode")
     pool.Close()
     return nil
 }
@@ -300,4 +389,89 @@ fn http_decoding_guide_example_unpacks_a_gzip_answer() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
     assert_eq!(stdout(&output), "quarterly report\n");
+}
+
+#[test]
+fn http_streamed_decoding_memory_does_not_grow_with_the_body() {
+    let source = r#"package main
+import "std/compress/flate"
+import "std/compress/gzip"
+import "std/context"
+import "std/io"
+import "std/net/http"
+import "std/net/url"
+import "std/strconv"
+import "std/strings"
+import "std/time"
+type Sink struct { data Mutex<Array<byte>> }
+func (s mut Sink) Write(data []byte) (int, error) {
+    s.data.withLock(func(out mut Array<byte>) {
+        for b in data { out.push(b) }
+    })
+    return data.len(), nil
+}
+type Conn struct { reply Array<byte>; cursor int; sent bool }
+func (c mut Conn) SetReadDeadline(deadline time.Instant) error { return nil }
+func (c mut Conn) SetWriteDeadline(deadline time.Instant) error { return nil }
+func (c mut Conn) Write(data []byte) (int, error) { c.sent = true; return data.len(), nil }
+func (c mut Conn) Read(data mut []byte) (int, error) {
+    if !c.sent || c.cursor >= c.reply.len() { return 0, http.ClientPollTimeout }
+    var n = 0
+    for n < data.len() && c.cursor < c.reply.len() {
+        data[n] = c.reply[c.cursor]
+        c.cursor += 1
+        n += 1
+    }
+    return n, nil
+}
+type Transport struct { reply Array<byte> }
+func (t Transport) Dial(ctx context.Context, target url.AbsoluteURL) (http.ClientConn, error) {
+    return Conn{reply: clone(t.reply), cursor: 0, sent: false}, nil
+}
+func packed(size int) Array<byte> {
+    var data = Array<byte>{}
+    var seed = 7
+    for data.len() < size {
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        data.push(byte(seed % 64 + 32))
+    }
+    let out = mutex(Array<byte>{})
+    var writer, _ = gzip.NewWriterLevel(Sink{data: out}, gzip.MaxBytes, gzip.MaxBytes, flate.NoCompression)
+    let _, _ = writer.Write(data[:])
+    let _ = writer.Close()
+    let body = out.withLock(func(o mut Array<byte>) Array<byte> { return clone(o) })
+    var reply = strings.Bytes("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: " + strconv.Itoa(body.len()) + "\r\n\r\n")
+    for b in body { reply.push(b) }
+    return reply
+}
+func main() {
+    waitIdle(0)
+    let size = 4194304
+    let client, _ = http.NewClientWithTransport(http.DefaultClientConfig(), Transport{reply: packed(size)})
+    var config = http.DefaultDecodeConfig()
+    config.MaxBytes = 8388608
+    let empty = Array<byte>{}
+    var stream, err = client.OpenDecoded(context.Background(), "GET", "https://a.test/big", http.NewHeader(), empty[:], http.DefaultStreamConfig(), config)
+    if err != nil { panic("open") }
+    let before = allocatedBytes()
+    var buf = Array<byte>{}
+    for buf.len() < 4096 { buf.push(0) }
+    var total = 0
+    var peak = 0
+    for {
+        let n, readErr = stream.Read(buf[:])
+        total += n
+        let used = allocatedBytes() - before
+        if used > peak { peak = used }
+        if readErr == io.EOF { break }
+        if readErr != nil { panic("read") }
+    }
+    if total != size { panic("size") }
+    if peak > 1048576 { panic("memory grew with the body: " + strconv.Itoa(peak)) }
+    println("ok")
+}
+"#;
+    let output = run_controlled_one_worker(source);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "ok\n");
 }

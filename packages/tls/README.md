@@ -79,7 +79,7 @@ offered names and none matches, the handshake fails. If either side has no list,
 `https.NewDefaultAutoClient(config, limits)` offer `h2` and `http/1.1`: a server
 that picks `h2` gets one shared HTTP/2 connection for all later requests to it,
 and any other server is answered over HTTP/1.1. `Open` streams the answer
-with either protocol. See the
+with either protocol, and `OpenDecoded` also unpacks gzip as it streams. See the
 [HTTP/2 guide](../../docs/http2-connections.md).
 
 Configs and connections are Move values. Each session owns independent parsed

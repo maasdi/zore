@@ -11526,6 +11526,7 @@ in Zore without a native provider or new dependencies.
 | `MaxMembers = 1024` | Maximum concatenated gzip members per reader |
 | `NewReader(source own io.Reader, compressedLimit int, outputLimit int) (Reader, error)` | Takes ownership; validates limits without reading; parses lazily |
 | `(r mut Reader) Read(buf mut []byte) (int, error)` | Streams decoded bytes, with sticky terminal errors; empty reads return `(0, nil)` |
+| `(r mut Reader) SetStreaming(streaming bool)` | Chooses whether `Read` returns available output instead of filling the buffer |
 | `(r own Reader) Close() error` | Returns a prior failure, otherwise nil; drops source without draining or validating unread input |
 | `NewWriter(sink own io.Writer, inputLimit int, compressedLimit int) (Writer, error)` | Takes ownership; validates limits without writing |
 | `(w mut Writer) Write(data []byte) (int, error)` | Accepts input in bounded chunks and writes compressed blocks; empty writes succeed unless already failed or finished |
@@ -11559,7 +11560,9 @@ truncation and non-member trailing bytes fail. An empty source is truncated;
 an empty member is valid. Header scans are bounded by the compressed ceiling.
 An all-zero unused distance alphabet is accepted until a length needs it.
 Padding bits at block/member boundaries are ignored as the format permits.
-A stream is validated only after a nonempty `Read` returns `io.EOF`; bytes
+After `SetStreaming(true)`, `Read` returns as soon as it has at least one byte
+and producing more would read the source again, so output arrives as input
+does; otherwise it fills the buffer. A stream is validated only after a nonempty `Read` returns `io.EOF`; bytes
 returned earlier, including bytes returned with a later error, are unverified
 partial output. Reading exactly the expected payload length is insufficient.
 `Close` does not substitute for reading to EOF. Member count and byte ceilings
@@ -13093,7 +13096,7 @@ excluded.
 ## 37.46 HTTP client content decoding — LOCKED
 
 `std/net/http` adds opt-in decoding of gzip response bodies with the
-`std/compress/gzip` reader (§37.26). Every existing call returns bodies exactly
+`std/compress/gzip` reader (§37.26). Streamed decoding is locked in §37.52. Every existing call returns bodies exactly
 as received and sends no `Accept-Encoding`.
 
 ```ore
@@ -13664,6 +13667,91 @@ data then the reset error; the idle timeout; a body longer than its
 returning the allowed bytes first; a `HEAD` response complete at once; a buffered request on the same
 connection afterwards; and, against Node.js, a streamed 300,000-byte download
 over HTTP/2 and over the HTTP/1.1 fallback.
+
+## 37.52 Streamed content decoding — LOCKED
+
+gzip response bodies can be unpacked while they stream (§§37.41, 37.51), with
+the rules and limits of §37.46.
+
+```ore
+func DecodeHeaders(headers Header, config DecodeConfig) (Header, error)
+func DecodeStream(stream own ResponseStream, config DecodeConfig) (ResponseStream, error)
+func (c Client) OpenDecoded(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, stream StreamConfig, config DecodeConfig) (ResponseStream, error)
+func (p Pool) OpenDecoded(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, stream StreamConfig, config DecodeConfig) (ResponseStream, error)
+func (h HTTP2Conn) OpenDecoded(ctx context.Context, method string, absoluteURL string, headers Header, body []byte, stream StreamConfig, config DecodeConfig) (ResponseStream, error)
+func (a AutoClient) OpenDecoded(ctx context.Context, method string, absoluteURL string, headers http.Header, body []byte, stream http.StreamConfig, config http.DecodeConfig) (http.ResponseStream, error)
+```
+
+`DecodeHeaders` validates `config` like `DoDecoded` and returns a copy of
+`headers` with `Accept-Encoding: gzip` added, failing with
+`http.Client: client owns Accept-Encoding` when the caller set that field. Each
+`OpenDecoded` calls `DecodeHeaders`, opens the response with the matching `Open`
+(`AutoClient.Open` for the `tls/https` client) and passes it to `DecodeStream`;
+nothing is sent when `DecodeHeaders` fails.
+
+`DecodeStream` consumes `stream`. It returns the stream unchanged when it has no
+`Content-Encoding`, is already complete (an empty body or a `HEAD` response), has
+status 206, or has the `identity` encoding. Another encoding, or more than one,
+fails with `http.Client: unsupported content encoding` and closes the stream.
+For `gzip` and `x-gzip` it returns a new stream with the same status, the
+headers without `Content-Encoding` and `Content-Length`, and a body that yields
+unpacked bytes as `Read` is called. The packed body is read only as needed, so
+memory does not grow with the body size.
+
+Limits are checked as the body is read. When the response declares its packed
+`Content-Length`, the unpacked size is bounded exactly as in §37.46 from that
+length. Otherwise more than `MaxBytes` unpacked bytes fails with
+`http.Client: decoded body too large`, and more unpacked bytes than `MaxRatio`
+times the packed bytes read so far fails with
+`http.Client: decoded body expands too much`; very large `MaxRatio` values do
+not overflow. A packed body above 1 GiB fails with
+`http.Client: encoded body too large to decode`. A gzip body that turns out to
+be empty is returned as an empty, complete body. Broken data fails with the gzip
+reader's error, such as `gzip: checksum mismatch` or `gzip: truncated stream`,
+after the bytes already unpacked; concatenated members are joined and other
+trailing data is an error. Errors of the underlying stream, including its
+`StreamConfig` limits, timeouts and cancellation, are returned unchanged.
+`Trailers` reports the underlying stream's trailers once the end is reached.
+Closing or dropping the returned stream closes the underlying one.
+
+```ore
+import "std/context"
+import "std/io"
+import "std/net/http"
+
+func unpackedSize(client http.Client, target string) (int, error) {
+    let empty = Array<byte>{}
+    var stream = client.OpenDecoded(context.Background(), "GET", target, http.NewHeader(), empty[:],
+                                    http.DefaultStreamConfig(), http.DefaultDecodeConfig())?
+    var buf = Array<byte>{}
+    for buf.len() < 4096 {
+        buf.push(0)
+    }
+    var total = 0
+    for {
+        let n, err = stream.Read(buf[:])
+        total += n
+        if err == io.EOF {
+            return total, nil
+        }
+        if err != nil {
+            return total, err
+        }
+    }
+}
+```
+
+Compiler impact: bundled `std/net/http` and `tls/https` sources only; no runtime
+or syntax changes. Conformance: a scripted transport for gzip and x-gzip,
+concatenated members, plain, identity, empty, `HEAD` and 206 responses,
+unsupported and listed encodings, checksum, truncation and trailing-data
+failures, ratio and size limits with the exact limit, chunked bodies including
+an empty one, the ratio limit without a declared length, a `MaxRatio` near the
+integer maximum, a caller
+`Accept-Encoding` and invalid configuration that send nothing, `DecodeStream`
+on an opened stream and a pooled stream; memory that stays under 1 MiB while a
+4 MiB body is unpacked; and, against Node.js, a gzip body unpacked while it
+streams over HTTP/2 and HTTP/1.1.
 
 # 38. Self-Hosting Constraint
 
