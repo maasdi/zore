@@ -653,7 +653,12 @@ quarter apart, carved from 256 KiB spans whose page entries name the size and
 the page's place in the span, so the slot follows from one multiplication;
 larger buffers cover whole pages of their own. Freed slots go to a per-thread
 free list, spilling to and refilling from a shared list per size in batches of
-64, so most allocations and frees take no lock; spans are kept for reuse. Static
+64, so most allocations and frees take no lock. Free-slot metadata stays outside
+the spans. Under the shared lock, reservation counts protect live slots, cached
+slots and uncarved remainders; fully returned spans beyond one warm span per
+class give physical pages back to the host, retaining their virtual addresses.
+Reuse recommits before handing slots to a thread. See
+[the reclamation decision](decisions/0004-string-span-reclamation.md). Static
 text lies in no buffer and is never counted or freed. Text counts as a
 value that needs cleanup even though it is Copy: drop flags, scope-end drops,
 and the panic cleanup path cover it, and a value of a Copy type that holds text

@@ -8,6 +8,13 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### String memory reclamation
+
+- Fully returned small-string spans beyond one warm span per size class now
+  return physical pages to the host, keeping their virtual addresses reserved.
+  Reuse recommits before allocation; live strings and thread caches remain
+  protected. Free-slot metadata is stored outside the discarded pages.
+
 ### Streamed content decoding
 
 - `OpenDecoded` on `Client`, `Pool`, `HTTP2Conn` and `https.AutoClient`

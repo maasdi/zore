@@ -98,6 +98,9 @@ jobs:
         run: |
           clang --version
           rustc --version
+      - name: Reclaimed string span RSS
+        if: needs.routes.outputs.full == 'true' && runner.os == 'Linux'
+        run: cargo test --locked -p zore-runtime million_short_strings_return_resident_pages -- --ignored --nocapture
       - name: Regex differential oracle
         if: needs.routes.outputs.full == 'true'
         run: python tests/hardening/regexp_oracle.py

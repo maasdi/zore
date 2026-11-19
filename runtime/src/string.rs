@@ -45,6 +45,7 @@ static PAGES: [AtomicPtr<Middle>; ROOT_LEN] =
     [const { AtomicPtr::new(std::ptr::null_mut()) }; ROOT_LEN];
 
 const SLAB: u32 = 1 << 31;
+const DISCARDED: u32 = 1 << 30;
 const CLASS_SHIFT: u32 = 8;
 const INDEX_MASK: u32 = (1 << CLASS_SHIFT) - 1;
 
@@ -77,7 +78,7 @@ fn slab_entry(class: usize, index: usize) -> u32 {
 }
 
 fn slab_class(entry: u32) -> usize {
-    ((entry & !SLAB) >> CLASS_SHIFT) as usize
+    ((entry & !(SLAB | DISCARDED)) >> CLASS_SHIFT) as usize
 }
 
 /// The smallest class that holds `(size - 1) / 16 + 1` sixteen-byte units.
@@ -231,6 +232,9 @@ fn buffer_of(data: *const u8, len: usize) -> Option<Buffer> {
     }
     let address = data.addr();
     let entry = page_entry(address);
+    if entry & SLAB != 0 && entry & DISCARDED != 0 {
+        return None;
+    }
     let base = if entry & SLAB != 0 {
         let class = slab_class(entry);
         let span = ((address >> PAGE_BITS) - (entry & INDEX_MASK) as usize) << PAGE_BITS;
@@ -245,48 +249,45 @@ fn buffer_of(data: *const u8, len: usize) -> Option<Buffer> {
     NonNull::new(header).map(Buffer)
 }
 
-/// Free slots linked through their text, plus the uncarved span from `next` to `end`.
 struct FreeList {
-    head: *mut u8,
+    slots: Vec<*mut u8>,
     len: usize,
     next: *mut u8,
     end: *mut u8,
 }
 
-// SAFETY: a list only links slots that nobody reads, and moves with whoever holds it.
+// SAFETY: free slots are accessed only by the thread holding the list.
 unsafe impl Send for FreeList {}
 
 impl FreeList {
     const EMPTY: Self = Self {
-        head: std::ptr::null_mut(),
+        slots: Vec::new(),
         len: 0,
         next: std::ptr::null_mut(),
         end: std::ptr::null_mut(),
     };
 
     fn push(&mut self, slot: *mut u8) {
-        // SAFETY: a free slot is ours, with room for a link after its header.
-        unsafe { slot.add(HEADER).cast::<*mut u8>().write(self.head) };
-        self.head = slot;
+        self.slots.push(slot);
         self.len += 1;
     }
 
     fn pop(&mut self) -> Option<*mut u8> {
-        let slot = NonNull::new(self.head)?.as_ptr();
-        // SAFETY: a listed slot holds the link written by `push`.
-        self.head = unsafe { slot.add(HEADER).cast::<*mut u8>().read() };
+        let slot = self.slots.pop()?;
         self.len -= 1;
         Some(slot)
     }
+}
 
-    fn move_to(&mut self, other: &mut Self, count: usize) {
-        for _ in 0..count {
-            let Some(slot) = self.pop() else {
-                return;
-            };
-            other.push(slot);
-        }
-    }
+struct SpanState {
+    reserved: usize,
+    discarded: bool,
+}
+
+fn span_base(slot: *mut u8) -> usize {
+    let address = slot.addr();
+    let entry = page_entry(address);
+    ((address >> PAGE_BITS) - (entry & INDEX_MASK) as usize) << PAGE_BITS
 }
 
 /// How many free slots of a class move between a thread and the shared lists at once.
@@ -296,17 +297,69 @@ const BATCH: usize = 64;
 struct Shared {
     free: FreeList,
     spans: Vec<(*mut u8, *mut u8)>,
+    states: std::collections::BTreeMap<usize, SpanState>,
+    warm: Option<usize>,
 }
 
 // SAFETY: like `FreeList`, the remainders are untouched storage that nobody reads.
 unsafe impl Send for Shared {}
 
 impl Shared {
+    fn claim(&mut self, slot: *mut u8, count: usize, class: usize) {
+        let base = span_base(slot);
+        let state = self.states.get_mut(&base).expect("registered span");
+        if state.discarded {
+            pages::commit(base);
+            mark(base, SPAN, |index| slab_entry(class, index));
+            state.discarded = false;
+        }
+        state.reserved += count;
+        if self.warm == Some(base) {
+            self.warm = None;
+        }
+    }
+
+    fn relinquish(&mut self, slot: *mut u8, count: usize, class: usize) {
+        let base = span_base(slot);
+        let state = self.states.get_mut(&base).expect("registered span");
+        state.reserved -= count;
+        if state.reserved != 0 {
+            return;
+        }
+        if self.warm.is_none() {
+            self.warm = Some(base);
+        } else if pages::discard(base) {
+            state.discarded = true;
+            mark(base, SPAN, |index| slab_entry(class, index) | DISCARDED);
+        }
+    }
+
+    fn take_free(&mut self, list: &mut FreeList, class: usize, count: usize) {
+        for _ in 0..count {
+            let Some(slot) = self.free.pop() else { break };
+            self.claim(slot, 1, class);
+            list.push(slot);
+        }
+    }
+
+    fn return_free(&mut self, list: &mut FreeList, class: usize, count: usize) {
+        for _ in 0..count {
+            let Some(slot) = list.pop() else { break };
+            self.free.push(slot);
+            self.relinquish(slot, 1, class);
+        }
+    }
+
     fn take_span(&mut self, class: usize, list: &mut FreeList) {
         if has_room(&self.free, class) {
             (list.next, list.end) = (self.free.next, self.free.end);
             (self.free.next, self.free.end) = (std::ptr::null_mut(), std::ptr::null_mut());
         } else if let Some(span) = self.spans.pop() {
+            self.claim(
+                span.0,
+                (span.1.addr() - span.0.addr()) / CLASSES[class],
+                class,
+            );
             (list.next, list.end) = span;
         }
     }
@@ -316,6 +369,8 @@ static SHARED: [std::sync::Mutex<Shared>; CLASSES.len()] = [const {
     std::sync::Mutex::new(Shared {
         free: FreeList::EMPTY,
         spans: Vec::new(),
+        states: std::collections::BTreeMap::new(),
+        warm: None,
     })
 }; CLASSES.len()];
 
@@ -334,9 +389,14 @@ impl Drop for Cache {
             let list = list.get_mut();
             let mut shared = shared(class);
             let len = list.len;
-            list.move_to(&mut shared.free, len);
+            shared.return_free(list, class, len);
             if has_room(list, class) {
                 shared.spans.push((list.next, list.end));
+                shared.relinquish(
+                    list.next,
+                    (list.end.addr() - list.next.addr()) / CLASSES[class],
+                    class,
+                );
             }
         }
     }
@@ -361,7 +421,14 @@ fn has_room(list: &FreeList, class: usize) -> bool {
 
 /// A fresh zeroed span of `class`: every slot in it reads zero owners, so it counts as free.
 fn new_span(class: usize, list: &mut FreeList) {
-    let span = super::alloc::alloc_kept(SPAN, PAGE);
+    let span = pages::allocate();
+    shared(class).states.insert(
+        span.expose_provenance(),
+        SpanState {
+            reserved: SPAN / CLASSES[class],
+            discarded: false,
+        },
+    );
     mark(span.expose_provenance(), SPAN, |index| {
         slab_entry(class, index)
     });
@@ -385,7 +452,7 @@ fn alloc_cached(class: usize, list: &mut FreeList) -> *mut u8 {
         return slot;
     }
     let mut shared = shared(class);
-    shared.free.move_to(list, BATCH);
+    shared.take_free(list, class, BATCH);
     if list.len == 0 {
         shared.take_span(class, list);
     }
@@ -399,17 +466,31 @@ fn alloc_cached(class: usize, list: &mut FreeList) -> *mut u8 {
 
 /// Allocates once this thread's cache is gone, holding the shared lock throughout.
 fn alloc_shared(class: usize) -> *mut u8 {
-    let mut guard = shared(class);
-    let shared = &mut *guard;
-    if let Some(slot) = shared.free.pop().or_else(|| carve(&mut shared.free, class)) {
-        return slot;
+    let mut list = FreeList::EMPTY;
+    {
+        let mut shared = shared(class);
+        shared.take_free(&mut list, class, 1);
+        if list.len == 0 {
+            shared.take_span(class, &mut list);
+        }
     }
-    if let Some(span) = shared.spans.pop() {
-        (shared.free.next, shared.free.end) = span;
-    } else {
-        new_span(class, &mut shared.free);
+    if !has_room(&list, class) && list.len == 0 {
+        new_span(class, &mut list);
     }
-    carve(&mut shared.free, class).expect("a span has a slot")
+    let slot = list
+        .pop()
+        .or_else(|| carve(&mut list, class))
+        .expect("a span has a slot");
+    if has_room(&list, class) {
+        let mut shared = shared(class);
+        shared.spans.push((list.next, list.end));
+        shared.relinquish(
+            list.next,
+            (list.end.addr() - list.next.addr()) / CLASSES[class],
+            class,
+        );
+    }
+    slot
 }
 
 fn free_slot(slot: *mut u8, class: usize) {
@@ -419,13 +500,18 @@ fn free_slot(slot: *mut u8, class: usize) {
         let list = unsafe { &mut *cache.0[class].get() };
         list.push(slot);
         if list.len > 2 * BATCH {
-            list.move_to(&mut shared(class).free, BATCH);
+            shared(class).return_free(list, class, BATCH);
         }
     });
     if cached.is_err() {
-        shared(class).free.push(slot);
+        let mut shared = shared(class);
+        shared.free.push(slot);
+        shared.relinquish(slot, 1, class);
     }
 }
+
+#[path = "string_pages.rs"]
+mod pages;
 
 /// Adds a buffer with one owner holding `used` bytes of at least `capacity`, copied from the given pieces.
 fn new_buffer(pieces: &[&[u8]], capacity: usize) -> *mut u8 {
@@ -629,7 +715,7 @@ pub(super) fn release_all() {
                 let base = (first + offset) << PAGE_BITS;
                 if entry == 1 {
                     bases.push(base);
-                } else if entry & SLAB != 0 && entry & INDEX_MASK == 0 {
+                } else if entry & SLAB != 0 && entry & DISCARDED == 0 && entry & INDEX_MASK == 0 {
                     let size = CLASSES[slab_class(entry)];
                     bases.extend((0..SPAN / size).map(|slot| base + slot * size));
                 }
@@ -637,6 +723,9 @@ pub(super) fn release_all() {
         }
     }
     for base in bases {
+        if page_entry(base) & DISCARDED != 0 {
+            continue;
+        }
         let header = std::ptr::with_exposed_provenance_mut::<Header>(base);
         let Some(header) = NonNull::new(header) else {
             continue;
@@ -1328,6 +1417,122 @@ mod tests {
         }
         assert_eq!(live_buffers(), 0);
         assert_eq!(crate::alloc::live_bytes(), bytes_before);
+    }
+
+    #[test]
+    fn empty_spans_are_discarded_recommitted_and_released_again() {
+        let _serial = serial();
+        release_all();
+        let class = CLASSES.len() - 1;
+        let length = CLASSES[class] - HEADER;
+        let count = if cfg!(miri) { 24 } else { 256 };
+        for _ in 0..2 {
+            std::thread::spawn(move || {
+                let payload = vec![b's'; length];
+                let texts: Vec<_> = (0..count).map(|_| StringOut::built(&payload)).collect();
+                for text in texts {
+                    assert_eq!(read(&text).as_bytes(), payload);
+                    release(text.data, length);
+                }
+            })
+            .join()
+            .unwrap();
+            let shared = shared(class);
+            assert!(shared.states.values().all(|state| state.reserved == 0));
+            assert!(
+                shared
+                    .states
+                    .values()
+                    .filter(|state| state.discarded)
+                    .count()
+                    >= 2
+            );
+            drop(shared);
+            release_all();
+            assert_eq!(live_buffers(), 0);
+        }
+        let leaked = StringOut::built(&vec![b'x'; length]);
+        assert_eq!(read(&leaked).len(), length);
+        release_all();
+        assert_eq!(live_buffers(), 0);
+    }
+
+    #[test]
+    fn live_lookups_race_with_other_spans_being_discarded() {
+        let _serial = serial();
+        release_all();
+        let length = CLASSES[CLASSES.len() - 1] - HEADER;
+        let text = StringOut::built(&vec![b'a'; length]);
+        let address = text.data.expose_provenance();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let data = std::ptr::with_exposed_provenance(address);
+                for _ in 0..if cfg!(miri) { 40 } else { 100_000 } {
+                    retain(data, length);
+                    let buffer = buffer_of(data.wrapping_add(length - 1), 1).unwrap();
+                    assert_eq!(buffer.text().cast_const(), data);
+                    release(data, length);
+                }
+            });
+            scope.spawn(move || {
+                for _ in 0..if cfg!(miri) { 2 } else { 8 } {
+                    std::thread::spawn(move || {
+                        let payload = vec![b'b'; length];
+                        let texts: Vec<_> = (0..32).map(|_| StringOut::built(&payload)).collect();
+                        for text in texts {
+                            release(text.data, length);
+                        }
+                    })
+                    .join()
+                    .unwrap();
+                }
+            });
+        });
+        assert_eq!(read(&text), "a".repeat(length));
+        release(text.data, length);
+        assert_eq!(live_buffers(), 0);
+    }
+
+    #[test]
+    #[ignore = "manual peak/resident memory measurement"]
+    fn million_short_strings_return_resident_pages() {
+        let _serial = serial();
+        fn rss() -> usize {
+            #[cfg(target_os = "linux")]
+            return std::fs::read_to_string("/proc/self/statm")
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .parse::<usize>()
+                .unwrap()
+                * PAGE;
+            #[cfg(not(target_os = "linux"))]
+            0
+        }
+        release_all();
+        let before = rss();
+        let (send, receive) = std::sync::mpsc::channel();
+        let (resume, paused) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let texts: Vec<_> = (0..1_000_000)
+                .map(|_| StringOut::built(b"short string"))
+                .collect();
+            send.send(()).unwrap();
+            paused.recv().unwrap();
+            for text in texts {
+                release(text.data, 12);
+            }
+        });
+        receive.recv().unwrap();
+        let peak = rss();
+        resume.send(()).unwrap();
+        worker.join().unwrap();
+        let after = rss();
+        println!("resident bytes: before={before}, peak={peak}, after={after}");
+        #[cfg(target_os = "linux")]
+        assert!(peak.saturating_sub(after) > 24 * 1024 * 1024);
+        assert_eq!(live_buffers(), 0);
     }
 
     #[test]

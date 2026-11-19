@@ -107,6 +107,10 @@ const RUNTIME_SOURCES: &[(&str, &str)] = &[
     ),
     ("string.rs", include_str!("../../../runtime/src/string.rs")),
     (
+        "string_pages.rs",
+        include_str!("../../../runtime/src/string_pages.rs"),
+    ),
+    (
         "strconv.rs",
         include_str!("../../../runtime/src/strconv.rs"),
     ),
