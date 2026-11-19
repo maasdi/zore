@@ -10,7 +10,8 @@ and final release normally use thread-local free-slot caches, with batches of
 64 moving through a shared allocator per class.
 
 Free-slot addresses now live in vectors outside the spans, so discarding pages
-cannot erase allocator links. A per-class map counts reserved slots per span:
+cannot erase allocator links. A per-class map retains each original mapping
+pointer and counts reserved slots per span:
 live slots, cached free slots and a thread's uncarved remainder all count as
 reserved. Only transfers under the shared lock update these counts. A span with
 zero reservations has no live string and no thread cache that can access it.

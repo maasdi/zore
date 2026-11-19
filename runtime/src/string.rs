@@ -291,6 +291,7 @@ impl FreeList {
 }
 
 struct SpanState {
+    base: *mut u8,
     reserved: usize,
     discarded: bool,
 }
@@ -320,7 +321,7 @@ impl Shared {
         let base = span_base(slot);
         let state = self.states.get_mut(&base).expect("registered span");
         if state.discarded {
-            pages::commit(base);
+            pages::commit(state.base.addr());
             mark(base, SPAN, |index| slab_entry(class, index));
             state.discarded = false;
         }
@@ -339,7 +340,7 @@ impl Shared {
         }
         if self.warm.is_none() {
             self.warm = Some(base);
-        } else if pages::discard(base) {
+        } else if pages::discard(state.base.addr()) {
             state.discarded = true;
             mark(base, SPAN, |index| slab_entry(class, index) | DISCARDED);
         }
@@ -436,6 +437,7 @@ fn new_span(class: usize, list: &mut FreeList) {
     shared(class).states.insert(
         span.expose_provenance(),
         SpanState {
+            base: span,
             reserved: SPAN / CLASSES[class],
             discarded: false,
         },
