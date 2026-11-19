@@ -186,7 +186,21 @@ fn mark(base: usize, size: usize, entry: impl Fn(usize) -> u32) {
 
 fn page_entry(address: usize) -> u32 {
     let page = address >> PAGE_BITS;
-    leaf(page, false).map_or(0, |leaf| leaf[page % LEAF_LEN].load(Ordering::Relaxed))
+    let Some(root) = PAGES.get(page >> (LEAF_BITS + MIDDLE_BITS)) else {
+        return 0;
+    };
+    let middle = root.load(Ordering::Acquire);
+    if middle.is_null() {
+        return 0;
+    }
+    let index = (page >> LEAF_BITS) % MIDDLE_LEN;
+    // SAFETY: installed tables stay allocated; index selects one initialized atomic.
+    let node = unsafe { (*middle.cast::<AtomicPtr<Leaf>>().add(index)).load(Ordering::Acquire) };
+    if node.is_null() {
+        return 0;
+    }
+    // SAFETY: the leaf stays allocated and this index lies within its atomic array.
+    unsafe { (*node.cast::<AtomicU32>().add(page % LEAF_LEN)).load(Ordering::Relaxed) }
 }
 
 fn unsupported_address() -> ! {
@@ -232,9 +246,6 @@ fn buffer_of(data: *const u8, len: usize) -> Option<Buffer> {
     }
     let address = data.addr();
     let entry = page_entry(address);
-    if entry & SLAB != 0 && entry & DISCARDED != 0 {
-        return None;
-    }
     let base = if entry & SLAB != 0 {
         let class = slab_class(entry);
         let span = ((address >> PAGE_BITS) - (entry & INDEX_MASK) as usize) << PAGE_BITS;
@@ -1007,7 +1018,8 @@ mod tests {
 
     /// Freed text has no buffer, or lies in a slot that waits for reuse.
     fn freed(data: *const u8, len: usize) -> bool {
-        buffer_of(data, len).is_none_or(|buffer| buffer.owners.load(Ordering::Relaxed) == 0)
+        page_entry(data.addr()) & DISCARDED != 0
+            || buffer_of(data, len).is_none_or(|buffer| buffer.owners.load(Ordering::Relaxed) == 0)
     }
 
     fn buffer_count() -> usize {

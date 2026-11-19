@@ -2,7 +2,7 @@
 
 Runtime string tests cover empty-span discard/recommit, live retain/lookup/free
 races with reclamation, and teardown after discarded spans. Run
-`MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly miri test --locked
+`MIRIFLAGS="-Zmiri-permissive-provenance -Zmiri-tree-borrows" cargo +nightly miri test --locked
 -p zore-runtime --lib string:: -- --test-threads=1` for pointer-model checks.
 The ignored `million_short_strings_return_resident_pages` runtime test measures
 RSS before, during and after a million-string allocation burst and asserts a
