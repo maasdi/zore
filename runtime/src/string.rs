@@ -717,15 +717,19 @@ pub(super) fn release_all() {
                     bases.push(base);
                 } else if entry & SLAB != 0 && entry & DISCARDED == 0 && entry & INDEX_MASK == 0 {
                     let size = CLASSES[slab_class(entry)];
-                    bases.extend((0..SPAN / size).map(|slot| base + slot * size));
+                    for slot in 0..SPAN / size {
+                        let address = base + slot * size;
+                        let header = std::ptr::with_exposed_provenance::<Header>(address);
+                        // SAFETY: this span is committed and no task can allocate or free text.
+                        if unsafe { (*header).owners.load(Ordering::Relaxed) } != 0 {
+                            bases.push(address);
+                        }
+                    }
                 }
             }
         }
     }
     for base in bases {
-        if page_entry(base) & DISCARDED != 0 {
-            continue;
-        }
         let header = std::ptr::with_exposed_provenance_mut::<Header>(base);
         let Some(header) = NonNull::new(header) else {
             continue;
