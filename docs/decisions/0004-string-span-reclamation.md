@@ -23,8 +23,10 @@ Linux/macOS allocate spans as anonymous mappings and advise unused pages with
 with `VirtualFree(MEM_DECOMMIT)`, and recommits before reuse. Address ranges and
 page-table entries stay reserved for process lifetime. Resident-memory effects
 of the Unix advice depend on the host. Unsupported hosts retain their previous
-keep-for-reuse allocation policy. Miri uses allocated storage and zeroes free
-spans to model discard, without invoking unsupported OS memory APIs.
+keep-for-reuse allocation policy. Miri uses allocated storage with 32 KiB spans
+and smaller fixture counts to bound interpreter bookkeeping; it zeroes free
+spans to model discard without invoking unsupported OS memory APIs. Native
+tests retain the full 256 KiB spans and workload sizes.
 
 The shared lock serializes discard and recommit with taking slots or remainders.
 Page-table entries mark discarded spans so teardown skips inaccessible headers,

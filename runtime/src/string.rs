@@ -58,7 +58,7 @@ const CLASSES: [usize; 38] = [
 const LARGEST_SLOT: usize = CLASSES[CLASSES.len() - 1];
 
 /// Slots are carved from spans of whole pages, each page knowing its index in the span.
-const SPAN: usize = 64 * PAGE;
+const SPAN: usize = if cfg!(miri) { 8 * PAGE } else { 64 * PAGE };
 
 const RECIPROCAL_SHIFT: u32 = 40;
 
@@ -1473,7 +1473,7 @@ mod tests {
         release_all();
         let class = CLASSES.len() - 1;
         let length = CLASSES[class] - HEADER;
-        let count = if cfg!(miri) { 24 } else { 256 };
+        let count = if cfg!(miri) { 3 } else { 256 };
         for _ in 0..2 {
             std::thread::spawn(move || {
                 let payload = vec![b's'; length];
@@ -1526,7 +1526,9 @@ mod tests {
                 for _ in 0..if cfg!(miri) { 2 } else { 8 } {
                     std::thread::spawn(move || {
                         let payload = vec![b'b'; length];
-                        let texts: Vec<_> = (0..32).map(|_| StringOut::built(&payload)).collect();
+                        let texts: Vec<_> = (0..if cfg!(miri) { 3 } else { 32 })
+                            .map(|_| StringOut::built(&payload))
+                            .collect();
                         for text in texts {
                             release(text.data, length);
                         }
