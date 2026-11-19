@@ -475,7 +475,6 @@ fn alloc_cached(class: usize, list: &mut FreeList) -> *mut u8 {
     carve(list, class).expect("a fresh span has a slot")
 }
 
-/// Allocates once this thread's cache is gone, holding the shared lock throughout.
 fn alloc_shared(class: usize) -> *mut u8 {
     let mut list = FreeList::EMPTY;
     {
@@ -1339,8 +1338,36 @@ mod tests {
         }
     }
 
+    fn run_isolated(test: &str) -> bool {
+        const CHILD: &str = "ZORE_TEST_STRING_COUNTERS";
+        if cfg!(miri) || std::env::var(CHILD).as_deref() == Ok(test) {
+            return false;
+        }
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env(CHILD, test)
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("isolated string counter test timed out");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     #[test]
     fn slots_freed_on_another_thread_are_reused_and_counted() {
+        if run_isolated("string::tests::slots_freed_on_another_thread_are_reused_and_counted") {
+            return;
+        }
         let _serial = crate::string::serial();
         release_all();
         let count = if cfg!(miri) { 3 * BATCH } else { 8 * BATCH };
@@ -1396,7 +1423,12 @@ mod tests {
     }
 
     #[test]
-    fn text_built_and_freed_after_the_thread_cache_is_gone_takes_the_lock_once() {
+    fn text_built_and_freed_after_thread_cache_destruction_is_counted() {
+        if run_isolated(
+            "string::tests::text_built_and_freed_after_thread_cache_destruction_is_counted",
+        ) {
+            return;
+        }
         static RAN_AFTER_CACHE: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
         struct AfterCache;

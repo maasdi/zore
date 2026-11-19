@@ -1,5 +1,42 @@
 # Logging throughput
 
+## Empty-span reclamation — 2026-11-19
+
+Issue #241 adds physical-page reclamation while retaining virtual addresses.
+An isolated Linux runtime measurement of one million 12-byte strings observed
+3.2 MiB resident before allocation, 65.1 MiB at the peak, and 12.0 MiB after the
+worker freed its strings and exited. External free-slot vectors, page tables,
+reserved addresses and one warm span per class remain allocated. This measures
+current RSS, rather than the process's historical maximum.
+
+Comparison against main at `85693eb` on the same Linux host, alternating order,
+four logging runs and six string runs per version, using the same compiler
+profile and optimized native runtimes. Other local tests and Miri were paused
+or stopped for these measurements. Values are observed ranges, not guarantees.
+
+| Workload | Before | Reclamation |
+| --- | --- | --- |
+| 200,000 short strings, one task | 17.4–19.4 ms | 17.3–22.2 ms |
+| Same work in four tasks | 38.8–52.6 ms | 36.4–55.8 ms |
+| Whole logging workload, process CPU time | 12.79–13.17 s | 13.03–13.31 s |
+| Filtered log call | 0.71–0.78 µs | 0.75–0.91 µs |
+| Discard sink | 4.72–5.24 µs | 5.03–5.38 µs |
+| Discard with timestamp | 5.84–6.39 µs | 5.95–6.44 µs |
+| File sink | 23.68–26.31 µs | 24.73–25.17 µs |
+| Rolling, 64 KiB buffer | 5.36–5.75 µs | 5.71–6.19 µs |
+| Rolling with daily rotation | 5.70–6.02 µs | 5.55–6.61 µs |
+| Rolling, unbuffered | 22.97–26.75 µs | 24.18–25.21 µs |
+
+Total logging CPU medians differed by 0.5%; string and logging ranges overlap.
+These runs show no large throughput regression, but do not rule out small
+per-sink differences. Cross-platform RSS/performance measurements remain
+host-specific; native host tests verify discard/reuse and cleanup separately.
+
+Runtime string tests also run under Miri with permissive provenance and Tree
+Borrows. Lookup reads individual atomic entries rather than constructing a
+reference to a whole table on each call. Native tests use actual OS memory APIs;
+Miri models discard by clearing free storage.
+
 `workload.ore` logs 200,000 records of the form
 `level=INFO msg="request N took 42 ms" id=N ms=42` through `std/log` into
 several sinks and prints the average time per record. It writes into a
