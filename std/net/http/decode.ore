@@ -194,6 +194,9 @@ func DecodeStream(stream own ResponseStream, config DecodeConfig) (ResponseStrea
     let length, declared = source.headers.Get("Content-Length")
     let encodedLength, lengthErr = decimal(length)
     if lengthErr == nil && declared {
+        if encodedLength == 0 {
+            return source, nil
+        }
         if encodedLength > gzip.MaxBytes {
             return emptyResponseStream(), error("http.Client: encoded body too large to decode")
         }

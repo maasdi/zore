@@ -13693,8 +13693,8 @@ func (a AutoClient) OpenDecoded(ctx context.Context, method string, absoluteURL 
 nothing is sent when `DecodeHeaders` fails.
 
 `DecodeStream` consumes `stream`. It returns the stream unchanged when it has no
-`Content-Encoding`, is already complete (an empty body or a `HEAD` response), has
-status 206, or has the `identity` encoding. Another encoding, or more than one,
+`Content-Encoding`, is already complete (an empty body or a `HEAD` response),
+declares `Content-Length: 0`, has status 206, or has the `identity` encoding. Another encoding, or more than one,
 fails with `http.Client: unsupported content encoding` and closes the stream.
 For `gzip` and `x-gzip` it returns a new stream with the same status, the
 headers without `Content-Encoding` and `Content-Length`, and a body that yields
@@ -13709,8 +13709,8 @@ memory: more than `MaxBytes` unpacked bytes fails with
 `http.Client: encoded body too large to decode`. Bytes unpacked before a limit
 or other failure are returned by `Read` first; the error follows on the next
 call. A gzip body that turns out to be empty is returned as an empty, complete
-body without `Content-Encoding`, while a body already known to be empty (such as
-`Content-Length: 0`) is returned unchanged with its headers. Broken data fails
+body without `Content-Encoding`, while a body declared or already known to be
+empty is returned unchanged with its headers. Broken data fails
 with the gzip reader's error, such as `gzip: checksum mismatch` or
 `gzip: truncated stream`, after the bytes already unpacked; concatenated members are joined and other
 trailing data is an error. Errors of the underlying stream, including its
