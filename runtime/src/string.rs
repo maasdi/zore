@@ -45,6 +45,7 @@ static PAGES: [AtomicPtr<Middle>; ROOT_LEN] =
     [const { AtomicPtr::new(std::ptr::null_mut()) }; ROOT_LEN];
 
 const SLAB: u32 = 1 << 31;
+const DISCARDED: u32 = 1 << 30;
 const CLASS_SHIFT: u32 = 8;
 const INDEX_MASK: u32 = (1 << CLASS_SHIFT) - 1;
 
@@ -57,7 +58,7 @@ const CLASSES: [usize; 38] = [
 const LARGEST_SLOT: usize = CLASSES[CLASSES.len() - 1];
 
 /// Slots are carved from spans of whole pages, each page knowing its index in the span.
-const SPAN: usize = 64 * PAGE;
+const SPAN: usize = if cfg!(miri) { 8 * PAGE } else { 64 * PAGE };
 
 const RECIPROCAL_SHIFT: u32 = 40;
 
@@ -77,7 +78,7 @@ fn slab_entry(class: usize, index: usize) -> u32 {
 }
 
 fn slab_class(entry: u32) -> usize {
-    ((entry & !SLAB) >> CLASS_SHIFT) as usize
+    ((entry & !(SLAB | DISCARDED)) >> CLASS_SHIFT) as usize
 }
 
 /// The smallest class that holds `(size - 1) / 16 + 1` sixteen-byte units.
@@ -185,7 +186,21 @@ fn mark(base: usize, size: usize, entry: impl Fn(usize) -> u32) {
 
 fn page_entry(address: usize) -> u32 {
     let page = address >> PAGE_BITS;
-    leaf(page, false).map_or(0, |leaf| leaf[page % LEAF_LEN].load(Ordering::Relaxed))
+    let Some(root) = PAGES.get(page >> (LEAF_BITS + MIDDLE_BITS)) else {
+        return 0;
+    };
+    let middle = root.load(Ordering::Acquire);
+    if middle.is_null() {
+        return 0;
+    }
+    let index = (page >> LEAF_BITS) % MIDDLE_LEN;
+    // SAFETY: installed tables stay allocated; index selects one initialized atomic.
+    let node = unsafe { (*middle.cast::<AtomicPtr<Leaf>>().add(index)).load(Ordering::Acquire) };
+    if node.is_null() {
+        return 0;
+    }
+    // SAFETY: the leaf stays allocated and this index lies within its atomic array.
+    unsafe { (*node.cast::<AtomicU32>().add(page % LEAF_LEN)).load(Ordering::Relaxed) }
 }
 
 fn unsupported_address() -> ! {
@@ -245,48 +260,46 @@ fn buffer_of(data: *const u8, len: usize) -> Option<Buffer> {
     NonNull::new(header).map(Buffer)
 }
 
-/// Free slots linked through their text, plus the uncarved span from `next` to `end`.
 struct FreeList {
-    head: *mut u8,
+    slots: Vec<*mut u8>,
     len: usize,
     next: *mut u8,
     end: *mut u8,
 }
 
-// SAFETY: a list only links slots that nobody reads, and moves with whoever holds it.
+// SAFETY: free slots are accessed only by the thread holding the list.
 unsafe impl Send for FreeList {}
 
 impl FreeList {
     const EMPTY: Self = Self {
-        head: std::ptr::null_mut(),
+        slots: Vec::new(),
         len: 0,
         next: std::ptr::null_mut(),
         end: std::ptr::null_mut(),
     };
 
     fn push(&mut self, slot: *mut u8) {
-        // SAFETY: a free slot is ours, with room for a link after its header.
-        unsafe { slot.add(HEADER).cast::<*mut u8>().write(self.head) };
-        self.head = slot;
+        self.slots.push(slot);
         self.len += 1;
     }
 
     fn pop(&mut self) -> Option<*mut u8> {
-        let slot = NonNull::new(self.head)?.as_ptr();
-        // SAFETY: a listed slot holds the link written by `push`.
-        self.head = unsafe { slot.add(HEADER).cast::<*mut u8>().read() };
+        let slot = self.slots.pop()?;
         self.len -= 1;
         Some(slot)
     }
+}
 
-    fn move_to(&mut self, other: &mut Self, count: usize) {
-        for _ in 0..count {
-            let Some(slot) = self.pop() else {
-                return;
-            };
-            other.push(slot);
-        }
-    }
+struct SpanState {
+    base: *mut u8,
+    reserved: usize,
+    discarded: bool,
+}
+
+fn span_base(slot: *mut u8) -> usize {
+    let address = slot.addr();
+    let entry = page_entry(address);
+    ((address >> PAGE_BITS) - (entry & INDEX_MASK) as usize) << PAGE_BITS
 }
 
 /// How many free slots of a class move between a thread and the shared lists at once.
@@ -296,17 +309,69 @@ const BATCH: usize = 64;
 struct Shared {
     free: FreeList,
     spans: Vec<(*mut u8, *mut u8)>,
+    states: std::collections::BTreeMap<usize, SpanState>,
+    warm: Option<usize>,
 }
 
 // SAFETY: like `FreeList`, the remainders are untouched storage that nobody reads.
 unsafe impl Send for Shared {}
 
 impl Shared {
+    fn claim(&mut self, slot: *mut u8, count: usize, class: usize) {
+        let base = span_base(slot);
+        let state = self.states.get_mut(&base).expect("registered span");
+        if state.discarded {
+            pages::commit(state.base.addr());
+            mark(base, SPAN, |index| slab_entry(class, index));
+            state.discarded = false;
+        }
+        state.reserved += count;
+        if self.warm == Some(base) {
+            self.warm = None;
+        }
+    }
+
+    fn relinquish(&mut self, slot: *mut u8, count: usize, class: usize) {
+        let base = span_base(slot);
+        let state = self.states.get_mut(&base).expect("registered span");
+        state.reserved -= count;
+        if state.reserved != 0 {
+            return;
+        }
+        if self.warm.is_none() {
+            self.warm = Some(base);
+        } else if pages::discard(state.base.addr()) {
+            state.discarded = true;
+            mark(base, SPAN, |index| slab_entry(class, index) | DISCARDED);
+        }
+    }
+
+    fn take_free(&mut self, list: &mut FreeList, class: usize, count: usize) {
+        for _ in 0..count {
+            let Some(slot) = self.free.pop() else { break };
+            self.claim(slot, 1, class);
+            list.push(slot);
+        }
+    }
+
+    fn return_free(&mut self, list: &mut FreeList, class: usize, count: usize) {
+        for _ in 0..count {
+            let Some(slot) = list.pop() else { break };
+            self.free.push(slot);
+            self.relinquish(slot, 1, class);
+        }
+    }
+
     fn take_span(&mut self, class: usize, list: &mut FreeList) {
         if has_room(&self.free, class) {
             (list.next, list.end) = (self.free.next, self.free.end);
             (self.free.next, self.free.end) = (std::ptr::null_mut(), std::ptr::null_mut());
         } else if let Some(span) = self.spans.pop() {
+            self.claim(
+                span.0,
+                (span.1.addr() - span.0.addr()) / CLASSES[class],
+                class,
+            );
             (list.next, list.end) = span;
         }
     }
@@ -316,6 +381,8 @@ static SHARED: [std::sync::Mutex<Shared>; CLASSES.len()] = [const {
     std::sync::Mutex::new(Shared {
         free: FreeList::EMPTY,
         spans: Vec::new(),
+        states: std::collections::BTreeMap::new(),
+        warm: None,
     })
 }; CLASSES.len()];
 
@@ -334,9 +401,14 @@ impl Drop for Cache {
             let list = list.get_mut();
             let mut shared = shared(class);
             let len = list.len;
-            list.move_to(&mut shared.free, len);
+            shared.return_free(list, class, len);
             if has_room(list, class) {
                 shared.spans.push((list.next, list.end));
+                shared.relinquish(
+                    list.next,
+                    (list.end.addr() - list.next.addr()) / CLASSES[class],
+                    class,
+                );
             }
         }
     }
@@ -361,7 +433,15 @@ fn has_room(list: &FreeList, class: usize) -> bool {
 
 /// A fresh zeroed span of `class`: every slot in it reads zero owners, so it counts as free.
 fn new_span(class: usize, list: &mut FreeList) {
-    let span = super::alloc::alloc_kept(SPAN, PAGE);
+    let span = pages::allocate();
+    shared(class).states.insert(
+        span.expose_provenance(),
+        SpanState {
+            base: span,
+            reserved: SPAN / CLASSES[class],
+            discarded: false,
+        },
+    );
     mark(span.expose_provenance(), SPAN, |index| {
         slab_entry(class, index)
     });
@@ -385,7 +465,7 @@ fn alloc_cached(class: usize, list: &mut FreeList) -> *mut u8 {
         return slot;
     }
     let mut shared = shared(class);
-    shared.free.move_to(list, BATCH);
+    shared.take_free(list, class, BATCH);
     if list.len == 0 {
         shared.take_span(class, list);
     }
@@ -397,19 +477,32 @@ fn alloc_cached(class: usize, list: &mut FreeList) -> *mut u8 {
     carve(list, class).expect("a fresh span has a slot")
 }
 
-/// Allocates once this thread's cache is gone, holding the shared lock throughout.
 fn alloc_shared(class: usize) -> *mut u8 {
-    let mut guard = shared(class);
-    let shared = &mut *guard;
-    if let Some(slot) = shared.free.pop().or_else(|| carve(&mut shared.free, class)) {
-        return slot;
+    let mut list = FreeList::EMPTY;
+    {
+        let mut shared = shared(class);
+        shared.take_free(&mut list, class, 1);
+        if list.len == 0 {
+            shared.take_span(class, &mut list);
+        }
     }
-    if let Some(span) = shared.spans.pop() {
-        (shared.free.next, shared.free.end) = span;
-    } else {
-        new_span(class, &mut shared.free);
+    if !has_room(&list, class) && list.len == 0 {
+        new_span(class, &mut list);
     }
-    carve(&mut shared.free, class).expect("a span has a slot")
+    let slot = list
+        .pop()
+        .or_else(|| carve(&mut list, class))
+        .expect("a span has a slot");
+    if has_room(&list, class) {
+        let mut shared = shared(class);
+        shared.spans.push((list.next, list.end));
+        shared.relinquish(
+            list.next,
+            (list.end.addr() - list.next.addr()) / CLASSES[class],
+            class,
+        );
+    }
+    slot
 }
 
 fn free_slot(slot: *mut u8, class: usize) {
@@ -419,13 +512,18 @@ fn free_slot(slot: *mut u8, class: usize) {
         let list = unsafe { &mut *cache.0[class].get() };
         list.push(slot);
         if list.len > 2 * BATCH {
-            list.move_to(&mut shared(class).free, BATCH);
+            shared(class).return_free(list, class, BATCH);
         }
     });
     if cached.is_err() {
-        shared(class).free.push(slot);
+        let mut shared = shared(class);
+        shared.free.push(slot);
+        shared.relinquish(slot, 1, class);
     }
 }
+
+#[path = "string_pages.rs"]
+mod pages;
 
 /// Adds a buffer with one owner holding `used` bytes of at least `capacity`, copied from the given pieces.
 fn new_buffer(pieces: &[&[u8]], capacity: usize) -> *mut u8 {
@@ -630,8 +728,20 @@ pub(super) fn release_all() {
                 if entry == 1 {
                     bases.push(base);
                 } else if entry & SLAB != 0 && entry & INDEX_MASK == 0 {
-                    let size = CLASSES[slab_class(entry)];
-                    bases.extend((0..SPAN / size).map(|slot| base + slot * size));
+                    let class = slab_class(entry);
+                    let _shared = shared(class);
+                    if page_entry(base) & DISCARDED != 0 {
+                        continue;
+                    }
+                    let size = CLASSES[class];
+                    for slot in 0..SPAN / size {
+                        let address = base + slot * size;
+                        let header = std::ptr::with_exposed_provenance::<Header>(address);
+                        // SAFETY: this span is committed and no task can allocate or free text.
+                        if unsafe { (*header).owners.load(Ordering::Relaxed) } != 0 {
+                            bases.push(address);
+                        }
+                    }
                 }
             }
         }
@@ -914,7 +1024,8 @@ mod tests {
 
     /// Freed text has no buffer, or lies in a slot that waits for reuse.
     fn freed(data: *const u8, len: usize) -> bool {
-        buffer_of(data, len).is_none_or(|buffer| buffer.owners.load(Ordering::Relaxed) == 0)
+        page_entry(data.addr()) & DISCARDED != 0
+            || buffer_of(data, len).is_none_or(|buffer| buffer.owners.load(Ordering::Relaxed) == 0)
     }
 
     fn buffer_count() -> usize {
@@ -1234,8 +1345,36 @@ mod tests {
         }
     }
 
+    fn run_isolated(test: &str) -> bool {
+        const CHILD: &str = "ZORE_TEST_STRING_COUNTERS";
+        if cfg!(miri) || std::env::var(CHILD).as_deref() == Ok(test) {
+            return false;
+        }
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env(CHILD, test)
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("isolated string counter test timed out");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     #[test]
     fn slots_freed_on_another_thread_are_reused_and_counted() {
+        if run_isolated("string::tests::slots_freed_on_another_thread_are_reused_and_counted") {
+            return;
+        }
         let _serial = crate::string::serial();
         release_all();
         let count = if cfg!(miri) { 3 * BATCH } else { 8 * BATCH };
@@ -1291,7 +1430,12 @@ mod tests {
     }
 
     #[test]
-    fn text_built_and_freed_after_the_thread_cache_is_gone_takes_the_lock_once() {
+    fn text_built_and_freed_after_thread_cache_destruction_is_counted() {
+        if run_isolated(
+            "string::tests::text_built_and_freed_after_thread_cache_destruction_is_counted",
+        ) {
+            return;
+        }
         static RAN_AFTER_CACHE: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
         struct AfterCache;
@@ -1328,6 +1472,246 @@ mod tests {
         }
         assert_eq!(live_buffers(), 0);
         assert_eq!(crate::alloc::live_bytes(), bytes_before);
+    }
+
+    #[test]
+    #[cfg(all(not(miri), any(target_os = "linux", target_os = "macos", windows)))]
+    fn teardown_serializes_with_retiring_cache_decommit() {
+        fn protect(base: usize, readable: bool) {
+            #[cfg(unix)]
+            {
+                unsafe extern "C" {
+                    fn mprotect(address: *mut u8, len: usize, flags: i32) -> i32;
+                }
+                let flags = if readable { 3 } else { 0 };
+                // SAFETY: the test owns this page-aligned mapping with no live strings.
+                assert_eq!(
+                    unsafe { mprotect(std::ptr::with_exposed_provenance_mut(base), SPAN, flags) },
+                    0
+                );
+            }
+            #[cfg(not(unix))]
+            let _ = (base, readable);
+        }
+        struct Protection(usize);
+        impl Drop for Protection {
+            fn drop(&mut self) {
+                protect(self.0, true);
+            }
+        }
+        let _serial = serial();
+        release_all();
+        let class = CLASSES.len() - 1;
+        let mut list = FreeList::EMPTY;
+        new_span(class, &mut list);
+        let base = list.next.expose_provenance();
+        let end = list.end.expose_provenance();
+        list.next = std::ptr::null_mut();
+        list.end = std::ptr::null_mut();
+        let _protection = Protection(base);
+        let (ready, decommitted) = std::sync::mpsc::channel();
+        let (resume, paused) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let mut shared = shared(class);
+                shared.spans.push((
+                    std::ptr::with_exposed_provenance_mut(base),
+                    std::ptr::with_exposed_provenance_mut(end),
+                ));
+                shared.states.get_mut(&base).unwrap().reserved = 0;
+                assert!(pages::discard(base));
+                protect(base, false);
+                ready.send(()).unwrap();
+                paused
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                shared.states.get_mut(&base).unwrap().discarded = true;
+                mark(base, SPAN, |index| slab_entry(class, index) | DISCARDED);
+            });
+            decommitted
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            scope.spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                resume.send(()).unwrap();
+            });
+            release_all();
+        });
+        assert_eq!(live_buffers(), 0);
+    }
+
+    #[test]
+    fn empty_spans_are_discarded_recommitted_and_released_again() {
+        let _serial = serial();
+        release_all();
+        let class = CLASSES.len() - 1;
+        let length = CLASSES[class] - HEADER;
+        let count = if cfg!(miri) { 3 } else { 256 };
+        for _ in 0..2 {
+            std::thread::spawn(move || {
+                let payload = vec![b's'; length];
+                let texts: Vec<_> = (0..count).map(|_| StringOut::built(&payload)).collect();
+                for text in texts {
+                    assert_eq!(read(&text).as_bytes(), payload);
+                    release(text.data, length);
+                }
+            })
+            .join()
+            .unwrap();
+            let shared = shared(class);
+            assert!(shared.states.values().all(|state| state.reserved == 0));
+            assert!(
+                shared
+                    .states
+                    .values()
+                    .filter(|state| state.discarded)
+                    .count()
+                    >= 2
+            );
+            drop(shared);
+            release_all();
+            assert_eq!(live_buffers(), 0);
+        }
+        let leaked = StringOut::built(&vec![b'x'; length]);
+        assert_eq!(read(&leaked).len(), length);
+        release_all();
+        assert_eq!(live_buffers(), 0);
+    }
+
+    #[test]
+    fn live_lookups_race_with_other_spans_being_discarded() {
+        let _serial = serial();
+        release_all();
+        let length = CLASSES[CLASSES.len() - 1] - HEADER;
+        let text = StringOut::built(&vec![b'a'; length]);
+        let address = text.data.expose_provenance();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let data = std::ptr::with_exposed_provenance(address);
+                for _ in 0..if cfg!(miri) { 40 } else { 100_000 } {
+                    retain(data, length);
+                    let buffer = buffer_of(data.wrapping_add(length - 1), 1).unwrap();
+                    assert_eq!(buffer.text().cast_const(), data);
+                    release(data, length);
+                }
+            });
+            scope.spawn(move || {
+                for _ in 0..if cfg!(miri) { 2 } else { 8 } {
+                    std::thread::spawn(move || {
+                        let payload = vec![b'b'; length];
+                        let texts: Vec<_> = (0..if cfg!(miri) { 3 } else { 32 })
+                            .map(|_| StringOut::built(&payload))
+                            .collect();
+                        for text in texts {
+                            release(text.data, length);
+                        }
+                    })
+                    .join()
+                    .unwrap();
+                }
+            });
+        });
+        assert_eq!(read(&text), "a".repeat(length));
+        release(text.data, length);
+        assert_eq!(live_buffers(), 0);
+    }
+
+    #[test]
+    #[ignore = "manual peak/resident memory measurement"]
+    fn million_short_strings_return_resident_pages() {
+        let _serial = serial();
+        fn rss() -> usize {
+            #[cfg(target_os = "linux")]
+            {
+                unsafe extern "C" {
+                    fn getpagesize() -> i32;
+                }
+                // SAFETY: getpagesize has no preconditions.
+                let page_size = unsafe { getpagesize() } as usize;
+                std::fs::read_to_string("/proc/self/statm")
+                    .unwrap()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap()
+                    * page_size
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let output = std::process::Command::new("/bin/ps")
+                    .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .trim()
+                    .parse::<usize>()
+                    .unwrap()
+                    * 1024
+            }
+            #[cfg(windows)]
+            {
+                #[repr(C)]
+                struct Counters {
+                    size: u32,
+                    faults: u32,
+                    values: [usize; 8],
+                }
+                #[link(name = "kernel32")]
+                unsafe extern "system" {
+                    fn GetCurrentProcess() -> *mut std::ffi::c_void;
+                    fn K32GetProcessMemoryInfo(
+                        process: *mut std::ffi::c_void,
+                        counters: *mut Counters,
+                        size: u32,
+                    ) -> i32;
+                }
+                let mut counters = Counters {
+                    size: size_of::<Counters>() as u32,
+                    faults: 0,
+                    values: [0; 8],
+                };
+                // SAFETY: the current process is valid and counters has the declared writable size.
+                assert_ne!(
+                    unsafe {
+                        K32GetProcessMemoryInfo(
+                            GetCurrentProcess(),
+                            &mut counters,
+                            size_of::<Counters>() as u32,
+                        )
+                    },
+                    0
+                );
+                counters.values[1]
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+            0
+        }
+        release_all();
+        let before = rss();
+        let (send, receive) = std::sync::mpsc::channel();
+        let (resume, paused) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let texts: Vec<_> = (0..1_000_000)
+                .map(|_| StringOut::built(b"short string"))
+                .collect();
+            send.send(()).unwrap();
+            paused.recv().unwrap();
+            for text in texts {
+                release(text.data, 12);
+            }
+        });
+        receive.recv().unwrap();
+        let peak = rss();
+        resume.send(()).unwrap();
+        worker.join().unwrap();
+        let after = rss();
+        println!("resident bytes: before={before}, peak={peak}, after={after}");
+        #[cfg(any(target_os = "linux", windows))]
+        assert!(peak.saturating_sub(after) > 24 * 1024 * 1024);
+        assert_eq!(live_buffers(), 0);
     }
 
     #[test]

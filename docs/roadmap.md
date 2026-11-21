@@ -1,5 +1,11 @@
 # Implementation roadmap
 
+Issue #241 adds physical-page reclamation for fully returned small-string spans,
+keeping one warm span per size class and protecting thread-cached slots.
+Reserved addresses and page-table metadata remain stable. See the
+[allocator decision](decisions/0004-string-span-reclamation.md) for limits and
+the [logging measurements](../benchmarks/logging/README.md) for local evidence.
+
 Issue [#289](https://github.com/maasdi/zore/issues/289) adds explicit HTTP
 proxies under §37.47: `NewProxyClient` sends `http` requests in absolute form
 and `NewProxyClientWithTunnel` (or `https.NewProxyClient`) reaches `https`

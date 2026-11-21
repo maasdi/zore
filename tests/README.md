@@ -1,5 +1,16 @@
 # Compiler testing
 
+Runtime string tests cover empty-span discard/recommit, live retain/lookup/free
+races with reclamation, and teardown after discarded spans. Run
+`MIRIFLAGS="-Zmiri-permissive-provenance -Zmiri-tree-borrows" cargo +nightly miri test --locked
+-p zore-runtime --lib string:: -- --test-threads=1` for pointer-model checks.
+The ignored `million_short_strings_return_resident_pages` runtime test measures
+RSS before, during and after a million-string allocation burst and asserts a
+substantial decrease on Linux and Windows; run it explicitly with `--ignored
+--nocapture`. macOS records RSS, where page advice has host-defined effects.
+Native tests exercise actual host memory APIs; Miri simulates page discard.
+Miri uses smaller spans and fixture counts; native tests keep 256 KiB spans.
+
 Streamed HTTP responses are checked in `codegen/http_stream.rs` (real loopback
 peers, scripted connections, one-worker progress, bounded memory and the
 download guide), streamed uploads in `codegen/http_upload.rs` (failing sources,

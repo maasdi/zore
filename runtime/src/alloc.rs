@@ -42,6 +42,7 @@ pub(super) fn alloc_aligned(bytes: usize, align: usize) -> *mut u8 {
 }
 
 /// Zeroed storage that stays for the rest of the program, outside the live byte count.
+#[cfg(any(miri, not(any(target_os = "linux", target_os = "macos", windows))))]
 pub(super) fn alloc_kept(bytes: usize, align: usize) -> *mut u8 {
     alloc_layout(aligned_layout(bytes, align), true, false)
 }

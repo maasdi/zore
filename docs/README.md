@@ -48,6 +48,7 @@ See the [official naming rules](../spec/language-spec.md#21-naming--locked).
 
 ## Decision records
 
+- [0004 — Reclaim physical pages of empty string spans](decisions/0004-string-span-reclamation.md)
 - [0001 — Native backend: LLVM objects linked with a Rust runtime](decisions/0001-native-backend.md)
 - [0002 — Generated JSON codecs](decisions/0002-json-codecs.md)
 - [0003 — HTTP function handlers and automatic signals](decisions/0003-http-functions-and-signals.md)
