@@ -111,7 +111,7 @@ func environmentProxy(value string, name string) (ProxyConfig, error) {
 }
 
 func noProxyPort(text string) (int, error) {
-    if text == "" || text.len() > 5 {
+    if text == "" {
         return 0, error("invalid port")
     }
     for var i = 0; i < text.len(); i += 1 {

@@ -110,6 +110,13 @@ func main() {
         invoke(&[("HTTP_PROXY", "http://name@proxy.test/")], &["http://a/"]),
         "http://proxy.test|Basic bmFtZTo=\n"
     );
+    assert_eq!(
+        invoke(
+            &[("HTTP_PROXY", "http://u+ser:p+ass@proxy.test/")],
+            &["http://a/"]
+        ),
+        "http://proxy.test|Basic dStzZXI6cCthc3M=\n"
+    );
     for value in [
         "http://u%3Aname:secret@proxy.test/",
         "http://u:%0Dsecret@proxy.test/",
@@ -134,6 +141,7 @@ func main() {
         (".example.test", "http://example.test/", false),
         ("*.example.test", "http://a.example.test/", true),
         ("example.test:80", "http://example.test/", true),
+        ("example.test:000080", "http://example.test/", true),
         ("example.test:443", "http://example.test/", false),
         ("192.0.2.1", "http://192.0.2.1/", true),
         ("192.0.2.129/25", "http://192.0.2.255/", true),
@@ -202,6 +210,14 @@ func main() {
             format!("http.ProxyFromEnvironment: invalid {name}\n")
         );
     }
+    let root = "http://proxy.test/#";
+    let maximum = root.to_owned() + &"x".repeat(4096 - root.len());
+    assert_eq!(
+        invoke(&[("HTTP_PROXY", &maximum)], &["http://a/"]),
+        "http://proxy.test|\n"
+    );
+    let bypass = " ".repeat(4095) + "a";
+    assert_eq!(invoke(&[("NO_PROXY", &bypass)], &["http://a/"]), "direct\n");
     assert_eq!(
         invoke(&[("NO_PROXY", &vec!["a"; 256].join(","))], &["http://a/"]),
         "direct\n"
