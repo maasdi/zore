@@ -51,6 +51,22 @@ func scenario() error {{
     check(end == io.EOF && count == 5, "raw payload and final block")
     check(decoder.InputBytes() == 10 && decoder.OutputBytes() == 5, "raw counts")
     check(source.ReadByte()? == 77, "raw decoder does not prefetch framing")
+    check(decoder.Buffered() == 0, "stored bytes are never buffered")
+    let copies = Array<byte>{{75,76,28,30,0,0}}
+    var copySource = bytes.NewBuffer(copies[:])
+    var copier = flate.NewDecoder(10, 1000)?
+    var three = [byte; 3]{{0,0,0}}
+    let first, _ = flate.Read(copier, copySource, three[:])
+    let ready = copier.Buffered()
+    check(first == 3 && ready > 0 && ready < 198, "back-reference bytes ready")
+    var rest = Array<byte>{{}}
+    for rest.len() < 255 {{ rest.push(0) }}
+    let tail, _ = flate.Read(copier, copySource, rest[:])
+    check(tail == 197 && copier.Buffered() == 0, "back-reference drained")
+    var broken = flate.NewDecoder(10, 1000)?
+    var brokenSource = bytes.NewBuffer(copies[:3])
+    let _, brokenErr = flate.Read(broken, brokenSource, rest[:])
+    check(brokenErr != nil && broken.Buffered() == 0, "nothing ready after a failure")
     let _, repeated = flate.Read(decoder, source, buf[:])
     check(repeated == io.EOF, "sticky raw EOF")
     var limited = flate.NewDecoder(10, 4)?

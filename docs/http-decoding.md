@@ -64,11 +64,13 @@ answer, use `OpenDecoded` instead. It takes the same arguments plus a
 stays small however big the answer is. `Client`, `Pool`, `HTTP2Conn` and the
 `tls` package's `https.AutoClient` all have it.
 
-The same rules apply: the limits below are checked as you read (when the
-server does not say how big the packed answer is, the expansion limit is checked
-against what has arrived so far), a broken file
+The same rules apply: the limits below are checked as you read, a broken file
 fails part-way after the bytes unpacked so far, and answers that are not gzip
-come back unchanged. To unpack a stream you opened yourself with
+come back unchanged. When the server does not say how big the packed answer is,
+only `MaxBytes` applies: nothing is kept in memory, so there is no growth to
+guard against. An answer marked as empty (`Content-Length: 0`) comes back as it
+is, `Content-Encoding` included; one that only turns out to be empty while
+reading loses that header like any other unpacked answer. To unpack a stream you opened yourself with
 `Accept-Encoding: gzip`, pass it to `http.DecodeStream`.
 
 ## Limits
@@ -78,7 +80,8 @@ come back unchanged. To unpack a stream you opened yourself with
 - `MaxBytes` (16 MiB) is the largest unpacked size:
   `http.Client: decoded body too large`.
 - `MaxRatio` (200) is how many times larger than the packed bytes the answer
-  may grow: `http.Client: decoded body expands too much`.
+  may grow: `http.Client: decoded body expands too much`. A stream checks it
+  only when the server says how big the packed answer is.
 
 The packed answer is still limited by `ClientConfig.MaxBodyBytes`, like any
 `Do`, and cannot be unpacked above 1 GiB. Cancelling the context also stops the

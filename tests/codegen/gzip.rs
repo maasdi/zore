@@ -418,6 +418,23 @@ fn gzip_streaming_reads_return_available_output_without_filling_the_buffer() {
     check(text == "abc" && reads == 3, "streaming output")
     check(eager.Close() == nil, "verified")
     let _ = whole.Close()
+    let repeated = Array<byte>{31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 75, 76, 28, 30, 0, 0, 88, 240, 154, 89, 200, 0, 0, 0}
+    var copies = gzip.NewReader(feed(repeated[:], 0, done), 100, 1000)?
+    copies.SetStreaming(true)
+    var wide = Array<byte>{}
+    for wide.len() < 512 { wide.push(0) }
+    var total = 0
+    var largest = 0
+    for {
+        let n, err = copies.Read(wide[:])
+        total += n
+        if n > largest { largest = n }
+        if err == io.EOF { break }
+        check(err == nil, "repeated read error")
+    }
+    check(total == 200 && largest >= 190, "back-references stream in one read")
+    check(copies.Close() == nil, "repeated verified")
+    let _, _ = done.receive()
     let _, _ = done.receive()
     let _, _ = done.receive()
     println("ok")
