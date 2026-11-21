@@ -50,6 +50,9 @@ type h2Stream struct {
     pipe Mutex<h2Pipe>
     wake channel<bool>
     trailers Header
+    upload bool
+    input Mutex<h2UploadInput>
+    inputWake channel<bool>
 }
 
 type h2Engine struct {
@@ -389,7 +392,7 @@ func (e mut h2Engine) admit() {
                 end = block.len()
                 flags = 4
             }
-            if kind == h2Headers && request.body.len() == 0 {
+            if kind == h2Headers && !request.upload && request.body.len() == 0 {
                 flags |= 1
             }
             h2Put(e.out, kind, flags, id, block[position:end])
@@ -399,8 +402,14 @@ func (e mut h2Engine) admit() {
                 break
             }
         }
-        let ended = request.body.len() == 0
-        e.streams.push(h2Stream{id: id, ticket: request.ticket, done: request.done, body: request.body, sent: 0, ended: ended, head: request.head, sendWindow: e.peerWindow, recvWindow: e.limits.StreamWindow, recvUnacked: 0, answered: false, status: 0, headers: NewHeader(), expected: 0 - 1, data: Array<byte>{}, streamed: request.streamed, delivered: false, received: 0, pipe: request.pipe, wake: request.notify, trailers: NewHeader()})
+        let ended = !request.upload && request.body.len() == 0
+        if request.upload {
+            request.input.withLock(func(p mut h2UploadInput) {
+                p.ready = true
+            })
+            h2Nudge(request.inputWake)
+        }
+        e.streams.push(h2Stream{id: id, ticket: request.ticket, done: request.done, body: request.body, sent: 0, ended: ended, head: request.head, sendWindow: e.peerWindow, recvWindow: e.limits.StreamWindow, recvUnacked: 0, answered: false, status: 0, headers: NewHeader(), expected: 0 - 1, data: Array<byte>{}, streamed: request.streamed, delivered: false, received: 0, pipe: request.pipe, wake: request.notify, trailers: NewHeader(), upload: request.upload, input: request.input, inputWake: request.inputWake})
     }
 }
 
@@ -412,6 +421,14 @@ func (e mut h2Engine) produce() {
         }
         let i = e.turn
         e.turn += 1
+        if e.streams[i].upload {
+            if e.produceUpload(i) {
+                idleTurns = 0
+            } else {
+                idleTurns += 1
+            }
+            continue
+        }
         var count = e.streams[i].body.len() - e.streams[i].sent
         if e.streams[i].ended || count == 0 {
             idleTurns += 1
@@ -1134,4 +1151,47 @@ func (e mut h2Engine) linger() {
             return
         }
     }
+}
+
+func (e mut h2Engine) produceUpload(index int) bool {
+    if e.streams[index].ended {
+        return false
+    }
+    var room = h2FrameLimit
+    if room > e.sendWindow {
+        room = e.sendWindow
+    }
+    if room > e.streams[index].sendWindow {
+        room = e.streams[index].sendWindow
+    }
+    let chunk, ended, failure = e.streams[index].input.withLock(func(p mut h2UploadInput) (Array<byte>, bool, error) {
+        var data = Array<byte>{}
+        for data.len() < room && p.position < p.data.len() {
+            data.push(p.data[p.position])
+            p.position += 1
+        }
+        p.progress += data.len()
+        if p.position == p.data.len() {
+            p.data = Array<byte>{}
+            p.position = 0
+            return data, p.finished, p.failure
+        }
+        return data, false, nil
+    })
+    if chunk.len() > 0 || ended && failure == nil {
+        var flags = 0
+        if ended && failure == nil {
+            flags = 1;
+            e.streams[index].ended = true
+        }
+        h2Put(e.out, h2Data, flags, e.streams[index].id, chunk[:])
+        e.streams[index].sendWindow -= chunk.len()
+        e.sendWindow -= chunk.len()
+        h2Nudge(e.streams[index].inputWake)
+    }
+    if failure != nil {
+        e.discard(index, h2Cancel, failure);
+        return true
+    }
+    return chunk.len() > 0 || ended
 }

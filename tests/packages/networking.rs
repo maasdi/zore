@@ -156,6 +156,28 @@ func main() {
 }
 
 #[test]
+fn unknown_http_uploads_check_for_plain_and_async_callers() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/context"
+import "std/io"
+import "std/net/http"
+func plain(client http.Client, source own io.Reader) (http.ClientResponse, error) {
+    let body = http.NewUnknownLengthBody(source)
+    println(body.Len())
+    return client.Upload(context.Background(), "POST", "http://example.test/", http.NewHeader(), body, http.DefaultUploadConfig())
+}
+async func multiplexed(conn http.HTTP2Conn, source own io.Reader) (http.ClientResponse, error) {
+    let body = http.NewUnknownLengthBody(source)
+    return conn.Upload(context.Background(), "POST", "https://example.test/", http.NewHeader(), body, http.DefaultUploadConfig())
+}
+func main() {}
+"#,
+    )]);
+}
+
+#[test]
 fn streamed_http_uploads_reject_private_storage_reuse_and_wrong_types() {
     let open = "let client = http.NewClient(http.DefaultClientConfig())?; let file = os.Open(\"in.bin\")?; let body = http.NewRequestBody(file, 3)?";
     let send = "client.Upload(context.Background(), \"PUT\", \"http://a.test/\", http.NewHeader(), body, http.DefaultUploadConfig())";
@@ -173,6 +195,20 @@ fn streamed_http_uploads_reject_private_storage_reuse_and_wrong_types() {
         (
             "let _, _ = http.NewRequestBody(\"text\", 3)".to_owned(),
             "does not satisfy `io.Reader`",
+        ),
+        (
+            "let _ = http.NewUnknownLengthBody(\"text\")".to_owned(),
+            "does not satisfy `io.Reader`",
+        ),
+        (
+            format!(
+                "{}; let _, _ = {send}; println(body.Len())",
+                open.replace(
+                    "http.NewRequestBody(file, 3)?",
+                    "http.NewUnknownLengthBody(file)"
+                )
+            ),
+            "moved",
         ),
         (
             format!(

@@ -1,0 +1,250 @@
+package http
+
+import "std/context"
+import "std/io"
+import "std/time"
+
+type h2UploadInput struct {
+    data Array<byte>
+    position int
+    progress int
+    ready bool
+    finished bool
+    failure error
+}
+
+func emptyH2UploadInput() h2UploadInput {
+    return h2UploadInput{data: Array<byte>{}, position: 0, progress: 0, ready: false, finished: false, failure: nil}
+}
+
+type h2Upload struct {
+    conn HTTP2Conn
+    ticket int
+    input Mutex<h2UploadInput>
+    wake channel<bool>
+    done channel<h2Result>
+    settled bool
+    failure error
+}
+
+func (u mut h2Upload) drop() {
+    if !u.settled {
+        u.conn.abandon(u.ticket)
+    }
+    u.conn.release()
+}
+
+func (h HTTP2Conn) Upload(ctx context.Context, method string, absoluteURL string, headers Header, body own RequestBody, config UploadConfig) (ClientResponse, error) {
+    if !h.live {
+        return emptyClientResponse(), error("http2: closed connection")
+    }
+    let settings = uploadSettings(config)?
+    let limit = uploadLimit(body.length, settings, h.config.MaxRequestBodyBytes)
+    let fields, fieldErr = h.requestFieldsLimit(method, absoluteURL, headers, body.length, limit)
+    if fieldErr != nil {
+        return emptyClientResponse(), fieldErr
+    }
+    let contextErr = clientContextError(ctx)
+    if contextErr != nil {
+        return emptyClientResponse(), contextErr
+    }
+    let uploadCtx, stops = streamContext(ctx, settings.Timeout)
+    let input = mutex(emptyH2UploadInput())
+    let wake = channel<bool>(1)
+    let done = channel<h2Result>(1)
+    let ticket, admitErr = h.enqueue(h2Request{ticket: 0, wake: false, fields: fields, body: Array<byte>{}, head: method == "HEAD", done: done, streamed: false, pipe: mutex(emptyH2Pipe()), notify: channel<bool>(1), upload: true, input: input, inputWake: wake})
+    if admitErr != nil {
+        return emptyClientResponse(), admitErr
+    }
+    var upload = h2Upload{conn: h, ticket: ticket, input: input, wake: wake, done: done, settled: false, failure: nil}
+    let readyCtx, stop = context.WithDeadline(uploadCtx, time.Now().Add(h.config.Timeout))
+    let guard = clientCancellation{cancel: stop}
+    let result, ended, readyErr = upload.waitInput(readyCtx, 0, true)
+    _ = readyErr
+    if ended {
+        return result.response, result.failure
+    }
+    if readyErr != nil {
+        return emptyClientResponse(), readyErr
+    }
+    return upload.send(uploadCtx, body, settings, limit)
+}
+
+func (u mut h2Upload) result(result own h2Result) (h2Result, bool, error) {
+    u.settled = true
+    var taken = result
+    if taken.failure == nil && u.failure != nil {
+        taken.failure = u.failure
+    }
+    return taken, true, nil
+}
+
+func (u mut h2Upload) waitInput(ctx context.Context, idle time.Duration, admitting bool) (h2Result, bool, error) {
+    let timer = time.NewTimer(idle)
+    var tick = channel<bool>()
+    if idle > 0 {
+        tick = timer.C()
+    } else {
+        _ = timer.Stop()
+    }
+    let _, starting = u.inputState(admitting)
+    var progress = starting
+    for {
+        select {
+            case let result, _ = u.done.receive() {
+                return u.result(result)
+            }
+            default {}
+        }
+        let contextErr = clientContextError(ctx)
+        if contextErr != nil {
+            return h2Result{response: emptyClientResponse(), failure: nil}, false, contextErr
+        }
+        let ready, consumed = u.inputState(admitting)
+        if ready {
+            return h2Result{response: emptyClientResponse(), failure: nil}, false, nil
+        }
+        if consumed != progress {
+            _ = timer.Reset(idle)
+            progress = consumed
+        }
+        select {
+            case let result, _ = u.done.receive() {
+                return u.result(result)
+            }
+            case u.wake.receive() {}
+            case ctx.Done().receive() {
+                return h2Result{response: emptyClientResponse(), failure: nil}, false, h2Reason(ctx.Err(), error("context deadline exceeded"))
+            }
+            case tick.receive() {
+                let contextErr = clientContextError(ctx)
+                if contextErr != nil {
+                    return h2Result{response: emptyClientResponse(), failure: nil}, false, contextErr
+                }
+                let ready, consumed = u.inputState(admitting)
+                if ready || consumed != progress {
+                    _ = timer.Reset(idle)
+                    progress = consumed
+                    continue
+                }
+                return h2Result{response: emptyClientResponse(), failure: nil}, false, error("http.Client: upload idle timeout")
+            }
+        }
+    }
+}
+
+func (u h2Upload) inputState(admitting bool) (bool, int) {
+    return u.input.withLock(func(p mut h2UploadInput) (bool, int) {
+        if admitting {
+            return p.ready, p.progress
+        }
+        return p.data.len() == 0, p.progress
+    })
+}
+
+func (u mut h2Upload) send(ctx context.Context, body own RequestBody, settings UploadConfig, limit int) (ClientResponse, error) {
+    var source = body
+    var remaining = limit
+    let unknown = source.length < 0
+    if !unknown {
+        remaining = source.length
+    }
+    var buffer = Array<byte>{}
+    for buffer.len() < uploadChunkBytes {
+        buffer.push(0)
+    }
+    var empty = 0
+    for {
+        let result, ended, waitErr = u.waitInput(ctx, settings.IdleTimeout, false)
+        _ = waitErr
+        if ended {
+            return result.response, result.failure
+        }
+        if waitErr != nil {
+            return emptyClientResponse(), waitErr
+        }
+        var count = 0
+        var failure error = nil
+        var finished = !unknown && remaining == 0
+        if !finished {
+            var want = buffer.len()
+            if unknown && remaining < want {
+                want = remaining + 1
+            }
+            if !unknown && remaining < want {
+                want = remaining
+            }
+            let n, err = source.source.Read(buffer[:want])
+            count = n
+            if n < 0 || n > want {
+                _ = err
+                count = 0
+                _ = failure
+                failure = error("http.Client: invalid read count")
+            } else if n > remaining {
+                _ = err
+                count = 0
+                _ = failure
+                failure = error("http.Client: request body too large")
+            } else {
+                remaining -= n
+                if n > 0 {
+                    empty = 0
+                } else if err == nil {
+                    empty += 1
+                }
+                if err == io.EOF {
+                    if !unknown && remaining > 0 {
+                        _ = failure
+                        failure = error("http.Client: request body shorter than declared length")
+                    }
+                    finished = true
+                } else if err != nil {
+                    _ = failure
+                    failure = err
+                }
+                if !unknown && remaining == 0 {
+                    finished = true
+                }
+                if empty >= uploadEmptyReads {
+                    _ = failure
+                    failure = error("http.Client: request body made no progress")
+                }
+            }
+        }
+        u.failure = failure
+        var slot = Array<Array<byte>>{}
+        var data = Array<byte>{}
+        for var i = 0; i < count; i += 1 {
+            data.push(buffer[i])
+        }
+        slot.push(data)
+        u.input.withLock(func(p mut h2UploadInput) {
+            let _, data = slot.pop()
+            p.data = data
+            p.finished = finished || failure != nil
+            p.failure = failure
+        })
+        if finished || failure != nil {
+            let result, ended, waitErr = u.waitInput(ctx, settings.IdleTimeout, false)
+            _ = waitErr
+            if ended {
+                return result.response, result.failure
+            }
+            if waitErr != nil {
+                return emptyClientResponse(), waitErr
+            }
+            let responseCtx, cancel = context.WithDeadline(ctx, time.Now().Add(u.conn.config.Timeout))
+            let guard = clientCancellation{cancel: cancel}
+            select {
+                case let result, _ = u.done.receive() {
+                    let received, _, _ = u.result(result)
+                    return received.response, received.failure
+                }
+                case responseCtx.Done().receive() {
+                    return emptyClientResponse(), h2Reason(responseCtx.Err(), error("context deadline exceeded"))
+                }
+            }
+        }
+    }
+}

@@ -12684,7 +12684,8 @@ Defaults are 68719476736 declared bytes (64 GiB), no total timeout and a
 default; a zero `Timeout` means no total limit beyond the caller's context.
 Negative fields fail with `http.Client: negative upload configuration`. A
 declared length above `MaxBodyBytes` fails with `http.Client: request body too
-large`. `ClientConfig.MaxRequestBodyBytes` applies only to byte-slice bodies.
+large`. `ClientConfig.MaxRequestBodyBytes` does not limit known-length uploads; it
+also bounds unknown-length bodies under §37.53.
 These checks, like the other validation errors, happen before dialing.
 
 The call always consumes the body and the connection. Both are dropped exactly
@@ -13756,6 +13757,114 @@ integer maximum, a caller
 on an opened stream and a pooled stream; memory that stays under 1 MiB while a
 4 MiB body is unpacked; and, against Node.js, a gzip body unpacked while it
 streams over HTTP/2 and HTTP/1.1.
+
+## 37.53 Unknown-length HTTP uploads — LOCKED
+
+Issue #307 adds an explicit body whose length is discovered by reading its
+source. Existing known-length constructors and buffered APIs keep their rules.
+
+```ore
+func NewUnknownLengthBody(source own io.Reader) RequestBody
+func (h HTTP2Conn) Upload(ctx context.Context, method string, absoluteURL string,
+                         headers Header, body own RequestBody,
+                         config UploadConfig) (ClientResponse, error)
+```
+
+`Client.Upload` and `UploadExchange` also accept the new body. In `tls/https`,
+`AutoClient.Upload` has the same parameters and result as `Client.Upload`; it
+selects verified HTTP/2 or HTTP/1.1 once and never automatically replays a source.
+`RequestBody.Len()` returns -1 for an unknown-length body and the declared length
+otherwise. `NewRequestBody(source, length)` still rejects every negative length.
+The new constructor takes ownership immediately and does no I/O.
+
+**HTTP/1.1 framing.** Unknown bodies send `Transfer-Encoding: chunked` without
+`Content-Length`. Each positive source read becomes one hexadecimal chunk,
+CRLF, data and CRLF. A clean `io.EOF`, including bytes returned with EOF, ends
+with `0\r\n\r\n`. A source/transport/limit failure closes the connection and
+never sends a success terminator. Header, URL, method, proxy credential and
+HTTPS admission rules are unchanged; callers cannot set framing headers.
+Known-length bodies still send only their declared bytes with Content-Length.
+
+Unknown bodies are bounded by the smaller of `UploadConfig.MaxBodyBytes` and
+`ClientConfig.MaxRequestBodyBytes`, as a running payload-byte count, excluding
+chunk framing. Each read asks for at most 32768 bytes and at most one byte
+beyond the remaining budget. This permits an exact-limit EOF while detecting
+one excess byte. A count outside the requested slice fails with
+`http.Client: invalid read count`; a read exceeding the remaining budget fails
+with `http.Client: request body too large` before any bytes of that read are
+sent. No over-limit byte is transmitted. Arithmetic must remain safe even at
+the largest int limit. Known-length Upload bodies retain their independent
+UploadConfig bound, rather than gaining the byte-slice limit.
+
+The source is read on the calling task. For a valid, within-limit read, bytes
+are handed off before a read error is reported. An observed transport failure
+while handing off bytes wins over the accompanying source error. Other source
+errors are returned unchanged. One hundred consecutive zero/nil reads fail
+with `http.Client: request body made no progress`; positive reads reset this
+counter. Context cancellation/deadlines are checked before reads and while
+waiting to send. An arbitrary source Read cannot be forcibly interrupted;
+waiting inside it follows that source's contract. Its elapsed time is excluded
+from the upload idle timeout. Both body variants are consumed and their sources
+are dropped exactly once on every return, validation error, cancellation and
+panic. A failed request may already have affected the server.
+
+A server can refuse chunked framing with 411. The HTTP/1.1 client retains its
+send-then-receive policy: when the server drains the upload, its final response
+is returned normally; when it stops reading, a write failure or timeout can
+win. There is no Expect: 100-continue, request trailers, duplex HTTP/1.1 upload
+or automatic fallback to buffering or a known-length retry.
+
+**HTTP/2.** Upload accepts both body variants. Unknown bodies omit content-length
+and transfer-encoding; positive source reads become DATA frames, and clean EOF
+sets END_STREAM on the last DATA frame or an empty DATA frame. Known bodies
+supply their declared content-length, send exactly that many bytes without a
+probe, and report premature EOF as in §37.42. Header validation precedes source
+I/O, and both admission and initial HTTP/2 setup are bounded by ClientConfig.Timeout.
+
+One bounded input slot holds at most 32768 bytes per upload; DATA framing uses
+at most 16384 payload bytes per frame and obeys both connection and stream
+flow-control windows. No next source read occurs until the engine has consumed
+the preceding slot. The caller performs source reads, while the existing HTTP/2
+engine continues reading control/response frames and serving sibling streams.
+Owned buffers and source storage remain live across suspension; memory does not
+grow with upload length. Existing stream/waiter admission bounds apply.
+
+UploadConfig.Timeout and the caller's context cover the entire operation.
+IdleTimeout bounds lack of input-consumption progress while waiting to hand a
+chunk to the engine; progress rearms it. Time inside source Read is excluded.
+After the final input is handed off, ClientConfig.Timeout bounds remaining
+protocol output and the buffered response. Timeout errors are
+`http.Client: upload idle timeout` or the existing context errors. The response
+retains ClientConfig metadata/body limits. Cancellation and source failure
+reset only that request's stream; sibling streams remain usable. A final early
+response observed between source reads stops reading and is returned; a source
+failure already observed is not converted into a successful response. Bytes
+already queued can reach the peer even after cancellation, so no rollback or
+not-processed guarantee is inferred from a local failure.
+
+Plain calls use worker compensation and async calls suspend through the ordinary
+API without await. No new syntax, reactor, TLS provider or native primitive is
+needed. Compiler impact is bundled HTTP sources plus the maintained tls/https
+wrapper; no change to interface or ownership rules.
+
+```ore
+func sendUnknown(client http.Client, source own io.Reader, target string) error {
+    let body = http.NewUnknownLengthBody(source)
+    let response = client.Upload(context.Background(), "POST", target,
+                                 http.NewHeader(), body, http.DefaultUploadConfig())?
+    println(response.StatusCode)
+    return nil
+}
+```
+
+Conformance covers exact HTTP/1.1 chunk framing, empty/partial/bytes-plus-EOF
+reads, reader failures, invalid/no-progress counts, exact/over limits, timeout
+and cancellation, drop on all exits, no implicit replay and 411 responses.
+HTTP/2 cases cover DATA/END_STREAM, omitted unknown lengths, window-blocked
+uploads, sibling progress, early responses, limits, failures and stream-local
+cancellation. Independent Node.js peers exercise HTTP/1.1 and HTTP/2, including
+verified HTTPS routing. Large generators prove bounded memory. Plain/async
+and cleanup cases run on Linux, macOS and Windows.
 
 # 38. Self-Hosting Constraint
 

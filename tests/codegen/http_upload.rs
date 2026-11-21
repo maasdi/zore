@@ -26,6 +26,7 @@ func (s mut Source) Read(buf mut []byte) (int, error) {
     if n > s.size - s.at { n = s.size - s.at }
     for var i = 0; i < n; i += 1 { buf[i] = byte((s.at + i) % 251) }
     s.at += n
+    if s.mode == "errorwith" { return n, error("source failure") }
     if s.mode == "eofwith" && s.at == s.size { return n, io.EOF }
     return n, nil
 }
@@ -53,6 +54,8 @@ func run() error {
     if mode == "short" { size = 5; length = 10 }
     if mode == "long" { size = 20; length = 10 }
     if mode == "limit" { settings.MaxBodyBytes = 100 }
+    if mode == "clientlimit" { config.MaxRequestBodyBytes = 99 }
+    if mode == "maxlimit" { settings.MaxBodyBytes = 9223372036854775807; config.MaxRequestBodyBytes = settings.MaxBodyBytes }
     if mode == "overlimit" { settings.MaxBodyBytes = 99 }
     if mode == "negative" { length = -1 }
     if mode == "idle" || mode == "big" { size = 67108864; length = size; step = 65536 }
@@ -121,9 +124,11 @@ fn serve(listener: TcpListener, peer: Peer) -> Result<Option<Vec<u8>>, String> {
         }
     }
     let text = String::from_utf8_lossy(&head).to_string();
+    let chunked = text.contains("\r\nTransfer-Encoding: chunked\r\n");
     let length: usize = text
         .lines()
         .find_map(|line| line.strip_prefix("Content-Length: "))
+        .or(if chunked { Some("0") } else { None })
         .ok_or("missing Content-Length")?
         .trim()
         .parse()
@@ -132,6 +137,48 @@ fn serve(listener: TcpListener, peer: Peer) -> Result<Option<Vec<u8>>, String> {
         || !text.contains("Content-Type: application/octet-stream\r\n")
     {
         return Err(format!("unexpected request head: {text:?}"));
+    }
+    if chunked && peer == Peer::Stall {
+        std::thread::sleep(Duration::from_secs(2));
+        return Ok(Some(head));
+    }
+    if chunked {
+        assert!(!text.contains("Content-Length:"), "{text}");
+        let mut body = Vec::new();
+        loop {
+            let mut line = Vec::new();
+            while !line.ends_with(b"\r\n") {
+                match stream.read(&mut byte) {
+                    Ok(1) => line.push(byte[0]),
+                    _ => return Ok(Some(body)),
+                }
+            }
+            let count =
+                usize::from_str_radix(std::str::from_utf8(&line[..line.len() - 2]).unwrap(), 16)
+                    .unwrap();
+            assert!(count <= 32768);
+            let mut data = vec![0; count + 2];
+            stream.read_exact(&mut data).map_err(|e| e.to_string())?;
+            assert_eq!(&data[count..], b"\r\n");
+            body.extend_from_slice(&data[..count]);
+            if count == 0 {
+                break;
+            }
+        }
+        let reply = if peer == Peer::Reject {
+            "HTTP/1.1 411 Length Required\r\nContent-Length: 0\r\n\r\n".to_owned()
+        } else {
+            let sum = body.iter().fold(0u64, |sum, byte| {
+                (sum * 31 + u64::from(*byte)) % 1_000_000_007
+            });
+            let text = format!("{}:{sum}", body.len());
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{text}",
+                text.len()
+            )
+        };
+        let _ = stream.write_all(reply.as_bytes());
+        return Ok(Some(body));
     }
     if peer == Peer::Stall {
         std::thread::sleep(Duration::from_secs(2));
@@ -402,6 +449,22 @@ func main() { let err = run(); if err != nil { panic(errors.Message(err)) }; pri
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
     assert_eq!(stdout(&output), "ok\n");
+    let unknown = source
+        .replace(
+            "http.NewRequestBody(Source{at: 0}, 6)?",
+            "http.NewUnknownLengthBody(Source{at: 0})",
+        )
+        .replace("\\r\\n\\r\\nabcdef", "1\\r\\nf\\r\\n0\\r\\n\\r\\n");
+    let executable = dir.executable("unknown_one_worker");
+    controlled_runtime::build_with_workers(&unknown, &executable, 1);
+    let output = bounded_process::run(
+        Command::new(&executable).env("ZORE_CHECK_LEAKS", "1"),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(output.stderr.is_empty(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "ok\n");
 }
 
 #[test]
@@ -459,4 +522,68 @@ fn http_upload_guide_example_sends_the_file() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(output.stderr.is_empty(), "{}", stderr(&output));
     assert_eq!(stdout(&output), "201\n");
+}
+
+#[test]
+fn http_unknown_upload_chunks_eof_errors_and_running_limits() {
+    let source = UPLOAD_CLIENT
+        .replace(
+            "http.NewRequestBody(Source{at: 0, size: size, step: step, mode: mode}, length)?",
+            "http.NewUnknownLengthBody(Source{at: 0, size: size, step: step, mode: mode})",
+        )
+        .replace(
+            "if mode == \"zero\" { size = 0; length = 0 }",
+            "if mode == \"empty\" { size = 0; length = 0 }",
+        )
+        .replace(
+            "config.Timeout = 3 * time.Second",
+            "config.Timeout = 3 * time.Second; config.MaxRequestBodyBytes = 67108864",
+        );
+    let dir = TempDir::new().unwrap();
+    let executable = dir.executable("unknown");
+    build_file(&source, &executable).unwrap_or_else(|e| panic!("build failed: {e:?}"));
+    for mode in ["normal", "eofwith", "limit", "maxlimit"] {
+        let (output, body) = run_case(&executable, mode, Peer::Accept);
+        assert_eq!(output, uploaded(100, 100), "{mode}");
+        assert_eq!(body.unwrap().len(), 100);
+    }
+    let (output, body) = run_case(&executable, "empty", Peer::Accept);
+    assert_eq!(output, uploaded(0, 0));
+    assert!(body.unwrap().is_empty());
+    for (mode, expected, consumed, sent) in [
+        ("error", "source failure", 3, 3),
+        ("errorwith", "source failure", 3, 3),
+        (
+            "clientlimit",
+            "http.Client: request body too large",
+            100,
+            99,
+        ),
+        ("stall", "http.Client: request body made no progress", 0, 0),
+        ("over", "http.Client: invalid read count", 0, 0),
+        ("overlimit", "http.Client: request body too large", 100, 99),
+    ] {
+        let (output, body) = run_case(&executable, mode, Peer::Accept);
+        assert_eq!(
+            output,
+            format!("consumed {consumed}\n{expected}\n"),
+            "{mode}"
+        );
+        assert_eq!(body.unwrap().len(), sent, "{mode}");
+    }
+    let (output, _) = run_case(&executable, "normal", Peer::Reject);
+    assert_eq!(output, "consumed 100\n411\n\n");
+    let (output, body) = run_case(&executable, "precancel", Peer::NoConnection);
+    assert_eq!(output, "consumed 0\ncontext canceled\n");
+    assert!(body.is_none());
+    let (output, _) = run_case(&executable, "idle", Peer::Stall);
+    assert!(
+        output.ends_with("\nhttp.Client: upload idle timeout\n"),
+        "{output}"
+    );
+    if cfg!(target_os = "linux") {
+        let (output, body) = run_case(&executable, "big", Peer::Accept);
+        assert_eq!(output, uploaded(67108864, 67108864) + "true\n");
+        assert_eq!(body.unwrap().len(), 67108864);
+    }
 }
