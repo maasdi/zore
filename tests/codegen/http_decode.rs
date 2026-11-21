@@ -280,6 +280,10 @@ func run() error {
     expectStream(client, "/bomb", defaults, "error http.Client: decoded body expands too much")
     expectStream(client, "/bomb", small, "error http.Client: decoded body too large")
     expectStream(client, "/bomb", roomy, "1048576 bytes complete=true")
+    var unbounded = defaults
+    unbounded.MaxRatio = 4611686018427387903
+    unbounded.MaxBytes = 2097152
+    expectStream(client, "/bomb", unbounded, "1048576 bytes complete=true")
     expectStream(client, "/chunked", defaults, "hello world complete=true")
     expectStream(client, "/chunkedempty", defaults, " complete=true")
     expectStream(client, "/chunkedbomb", defaults, "1048576 bytes complete=true")

@@ -235,25 +235,30 @@ func (r mut ResponseStream) readDecoded(buf mut []byte) (int, error) {
         }
         return 0, io.EOF
     }
-    if n > 0 {
-        _ = err
+    if err == nil {
         return n, nil
     }
+    let failed = r.failDecoded(decodeFailure(err, r.gunzip[0].capped))
+    if n > 0 {
+        _ = failed
+        return n, nil
+    }
+    return 0, failed
+}
+
+func decodeFailure(err error, capped bool) error {
     if err == error("gzip: output byte limit exceeded") {
         _ = err
-        if r.gunzip[0].capped {
-            return 0, r.failDecoded(error("http.Client: decoded body expands too much"))
+        if capped {
+            return error("http.Client: decoded body expands too much")
         }
-        return 0, r.failDecoded(error("http.Client: decoded body too large"))
+        return error("http.Client: decoded body too large")
     }
     if err == error("gzip: compressed byte limit exceeded") {
         _ = err
-        return 0, r.failDecoded(error("http.Client: encoded body too large to decode"))
+        return error("http.Client: encoded body too large to decode")
     }
-    if err != nil {
-        return 0, r.failDecoded(err)
-    }
-    return 0, nil
+    return err
 }
 
 func (r mut ResponseStream) finishDecoded() {

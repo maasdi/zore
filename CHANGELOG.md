@@ -21,8 +21,8 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   unpacks a gzip answer while it streams (§37.52), so memory does not grow with
   its size. `http.DecodeStream` unpacks a stream opened another way, and
   `http.DecodeHeaders` prepares the request headers.
-- The same limits and errors as `DoDecoded` apply, checked as the body is read.
-  Without a declared packed length only `MaxBytes` applies. Bytes unpacked
+- The limits and errors of `DoDecoded` are checked as the body is read. Without
+  a declared packed length only `MaxBytes` applies, not `MaxRatio`. Bytes unpacked
   before an error are returned first, and long back-references stream out in
   one read.
 - `flate.Decoder.Buffered` reports the back-reference bytes ready to deliver.
