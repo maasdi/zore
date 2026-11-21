@@ -87,9 +87,8 @@ func (u mut h2Upload) waitInput(ctx context.Context, idle time.Duration, admitti
     } else {
         _ = timer.Stop()
     }
-    var progress = u.input.withLock(func(p mut h2UploadInput) int {
-        return p.progress
-    })
+    let _, starting = u.inputState(admitting)
+    var progress = starting
     for {
         select {
             case let result, _ = u.done.receive() {
@@ -101,12 +100,7 @@ func (u mut h2Upload) waitInput(ctx context.Context, idle time.Duration, admitti
         if contextErr != nil {
             return h2Result{response: emptyClientResponse(), failure: nil}, false, contextErr
         }
-        let ready, consumed = u.input.withLock(func(p mut h2UploadInput) (bool, int) {
-            if admitting {
-                return p.ready, p.progress
-            }
-            return p.data.len() == 0, p.progress
-        })
+        let ready, consumed = u.inputState(admitting)
         if ready {
             return h2Result{response: emptyClientResponse(), failure: nil}, false, nil
         }
@@ -127,10 +121,25 @@ func (u mut h2Upload) waitInput(ctx context.Context, idle time.Duration, admitti
                 if contextErr != nil {
                     return h2Result{response: emptyClientResponse(), failure: nil}, false, contextErr
                 }
+                let ready, consumed = u.inputState(admitting)
+                if ready || consumed != progress {
+                    _ = timer.Reset(idle)
+                    progress = consumed
+                    continue
+                }
                 return h2Result{response: emptyClientResponse(), failure: nil}, false, error("http.Client: upload idle timeout")
             }
         }
     }
+}
+
+func (u h2Upload) inputState(admitting bool) (bool, int) {
+    return u.input.withLock(func(p mut h2UploadInput) (bool, int) {
+        if admitting {
+            return p.ready, p.progress
+        }
+        return p.data.len() == 0, p.progress
+    })
 }
 
 func (u mut h2Upload) send(ctx context.Context, body own RequestBody, settings UploadConfig, limit int) (ClientResponse, error) {

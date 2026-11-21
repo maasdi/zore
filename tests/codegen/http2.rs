@@ -795,6 +795,7 @@ func uploadPeer(listener own net.Listener, mode string) error {
     let raw = listener.Accept()?
     var settings = Array<byte>{}
     if mode == "blocked" || mode == "cancel" || mode == "early" || mode == "blockedside" { settings = Array<byte>{0, 4, 0, 0, 0, 0} }
+    if mode == "trickle" { settings = Array<byte>{0, 4, 0, 0, 4, 0} }
     var p = Peer{conn: raw, decoder: hpack.NewDecoder(4096, 32768)?, encoder: hpack.NewEncoder(), input: Array<byte>{}, log: Array<string>{}, updates: 0, settings: settings}
     p.hello()?
     let id, ended = p.request()?
@@ -822,6 +823,7 @@ func uploadPeer(listener own net.Listener, mode string) error {
         }
         total += data.len()
         if data.len() > 0 {
+            if mode == "trickle" { time.Sleep(50 * time.Millisecond) }
             p.send(8, 0, 0, number(data.len())[:])?
             p.send(8, 0, id, number(data.len())[:])?
         }
@@ -884,6 +886,7 @@ func run() error {
     if mode == "big" { size = 67108864 }
     if mode == "clientlimit" { size = 100001 }
     if mode == "error" || mode == "slow" { size = 3 }
+    if mode == "trickle" { size = 20000 }
     if mode == "empty" { size = 0 }
     var bodies = Array<http.RequestBody>{}
     if mode == "known" { bodies.push(http.NewRequestBody(Source{at: 0, size: size, mode: mode, dropped: dropped, entered: entered, resume: resume}, size)?) } else {
@@ -892,7 +895,7 @@ func run() error {
     let _, body = bodies.pop()
     var settings = http.DefaultUploadConfig()
     settings.IdleTimeout = 100 * time.Millisecond
-    if mode == "blockedside" { settings.IdleTimeout = 300 * time.Millisecond }
+    if mode == "blockedside" || mode == "trickle" { settings.IdleTimeout = 300 * time.Millisecond }
     if mode == "cancel" { settings.Timeout = 100 * time.Millisecond; settings.IdleTimeout = time.Second }
     if mode == "limit" { settings.MaxBodyBytes = 10 }
     let response, err = invoke(conn, body, settings, mode)
@@ -960,6 +963,7 @@ func main() { let err = run(); if err != nil { println("failed " + message(err))
             "blockedside",
             "consumed 32768\n0 http.Client: upload idle timeout\nok\n",
         ),
+        ("trickle", "consumed 20000\n200 nil\n20000\nok\n"),
         ("early", "ok\n"),
     ] {
         assert_eq!(run(&executable, mode), expected, "{mode}");
