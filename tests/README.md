@@ -652,3 +652,11 @@ Use a manual `CI` workflow run on the desired branch to force full validation.
 Release tags and manual distribution runs retain their complete validation and
 publication safeguards. Conditional routing does not narrow seeded hardening
 or sanitizer policies in their separate workflow.
+
+
+HTTPS proxy conformance under §37.55 adds `codegen/proxy_environment.rs` for
+explicit environment selection and `net.IPPrefix`, extends `codegen/http_proxy.rs`
+with metadata preflight and a one-worker owned transport, and adds the
+independent Node proxy/target fixture in `driver/fixtures/https-proxy`.
+`packages/tls/stream_test.ore` covers owned stream count validation, error ordering
+and cleanup. Frontend acceptance and rejection live in `packages/networking.rs`.

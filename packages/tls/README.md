@@ -142,3 +142,20 @@ there is no Internet server dependency. The integration test copies the compiler
 executable outside the repository, installs/checks offline with missing native
 tools, then compiles and executes provider-present tests with leak checks. Linux,
 macOS and Windows CI run the same test; evidence belongs to the actual CI result.
+
+## Owned streams and HTTPS proxies
+
+`ClientStream(ctx, source, serverName, config)` and
+`ServerStream(ctx, source, config)` own a `tls.Stream`: mutable Read/Write,
+SetReadDeadline, SetWriteDeadline and ClearDeadline methods. The existing
+`Client` and `Server` constructors still accept `net.Conn`. Streams must honor
+deadlines and return valid counts. Bytes accompanying an error are processed
+before that error is returned when more input is needed; a TLS close-notify is
+required for clean EOF. Dropping a connection drops its source once.
+
+`https.NewProxyClient(roots, settings, proxy)` supports HTTP and HTTPS proxies.
+`https.NewDefaultProxyClient(settings, proxy)` uses system roots. HTTPS proxies
+are verified by hostname and certificate before CONNECT; the target is verified
+independently through nested TLS. Proxy credentials stay outside the target TLS
+stream. Environment selection is explicit through
+`http.ProxyFromEnvironment(target)`; see the [proxy guide](../../docs/http-proxies.md).

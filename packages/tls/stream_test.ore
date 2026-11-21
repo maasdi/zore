@@ -1,0 +1,175 @@
+package tls
+
+import "std/context"
+import "std/errors"
+import "std/time"
+
+type scriptedStream struct {
+    data Array<byte>
+    failure error
+    readCount int
+    writeCount int
+    reads channel<int>
+    drops channel<int>
+    timeout bool
+}
+
+func (s mut scriptedStream) drop() {
+    s.drops.send(1)
+}
+
+func (s mut scriptedStream) Read(buf mut []byte) (int, error) {
+    s.reads.send(1)
+    if s.timeout {
+        s.timeout = false;
+        return 0, error("tls: timed out")
+    }
+    if s.readCount != 0 {
+        return s.readCount, nil
+    }
+    if s.data.len() > buf.len() {
+        panic("script too large")
+    }
+    for i, b in s.data {
+        buf[i] = b
+    }
+    let n = s.data.len()
+    s.data = Array<byte>{}
+    return n, s.failure
+}
+
+func (s mut scriptedStream) Write(data []byte) (int, error) {
+    if s.writeCount != 0 {
+        return s.writeCount, nil
+    }
+    return data.len(), nil
+}
+
+func (s mut scriptedStream) SetReadDeadline(t time.Instant) error {
+    return nil
+}
+
+func (s mut scriptedStream) SetWriteDeadline(t time.Instant) error {
+    return nil
+}
+
+func (s mut scriptedStream) ClearDeadline() error {
+    return nil
+}
+
+func script(data own Array<byte>, failure error, readCount int, writeCount int, reads channel<int>, drops channel<int>) scriptedStream {
+    return scriptedStream{data: data, failure: failure, readCount: readCount, writeCount: writeCount, reads: reads, drops: drops, timeout: false}
+}
+
+func checkOne(events channel<int>) {
+    let value, ok = events.receive()
+    check(ok && value == 1)
+    select {
+        case events.receive() {
+            panic("unexpected extra event")
+        };
+        default {}
+    }
+}
+
+func TestGenericStreamRejectsInvalidCountsAndDropsOnHandshakeFailure() error {
+    let config, _ = configs()?
+    for count in Array<int>{-1, 1000000} {
+        let reads = channel<int>(4)
+        let drops = channel<int>(4)
+        let _, writeErr = ClientStream(context.Background(), script(Array<byte>{}, nil, 0, count, reads, drops), "localhost", config)
+        check(writeErr == error("tls: invalid write count"))
+        checkOne(drops)
+        let _, readErr = ClientStream(context.Background(), script(Array<byte>{}, nil, count, 0, reads, drops), "localhost", config)
+        check(readErr == error("tls: invalid read count"))
+        checkOne(reads)
+        checkOne(drops)
+        let _, serverErr = ServerStream(context.Background(), script(Array<byte>{}, nil, count, 0, reads, drops), configsServer()?)
+        check(serverErr == error("tls: invalid read count"))
+        checkOne(reads)
+        checkOne(drops)
+    }
+    return nil
+}
+
+func configsServer() (ServerConfig, error) {
+    let _, server = configs()?
+    return server, nil
+}
+
+func recordStream(failure error, truncated bool, timeout bool, reads channel<int>, drops channel<int>) (Conn, error) {
+    _ = failure
+    let clientConfig, serverConfig = configs()?
+    var client = ClientConfig{handle: plainSession(clientConfig.handle, "localhost")?, protocols: Array<byte>{}}
+    let server = ClientConfig{handle: plainSession(serverConfig.handle, "")?, protocols: Array<byte>{}}
+    memoryHandshake(client.handle, server.handle)?
+    let payload = Array<byte>{65, 0, 255}
+    nativeWrite(server.handle, payload[:])?
+    var ciphertext = nativeOutput(server.handle)?
+    if truncated {
+        let _, _ = ciphertext.pop()
+    }
+    var source = script(ciphertext, failure, 0, 0, reads, drops)
+    source.timeout = timeout
+    var conn = wrap(source, client.handle, context.Background())
+    client.handle = 0
+    conn.established = true
+    return conn, nil
+}
+
+func TestGenericStreamDeliversBytesBeforeObservedFailureWithoutReadingAgain() error {
+    for failure in Array<error>{error("source stopped"), error("EOF")} {
+        let reads = channel<int>(4)
+        let drops = channel<int>(4)
+        var conn = recordStream(failure, false, false, reads, drops)?
+        var buf = [byte; 8]{0, 0, 0, 0, 0, 0, 0, 0}
+        check(conn.Read(buf[:])? == 3 && buf[0] == 65 && buf[1] == 0 && buf[2] == 255)
+        let n, err = conn.Read(buf[:])
+        _ = err
+        if failure == error("EOF") {
+            check(n == 0 && err == error("tls: truncated connection without close-notify"))
+        } else {
+            check(n == 0 && errors.Message(err) == "tls.Read ciphertext: source stopped")
+        }
+        checkOne(reads)
+        drop(conn)
+        checkOne(drops)
+    }
+    return nil
+}
+
+func TestGenericStreamTruncatedRecordDoesNotHideEOFWithAnotherRead() error {
+    let reads = channel<int>(4)
+    let drops = channel<int>(4)
+    var conn = recordStream(error("EOF"), true, false, reads, drops)?
+    var buf = [byte; 1]{0}
+    let n, err = conn.Read(buf[:])
+    _ = err
+    check(n == 0 && err == error("tls: truncated connection without close-notify"))
+    checkOne(reads)
+    drop(conn)
+    checkOne(drops)
+    return nil
+}
+
+func TestGenericStreamPollTimeoutAndValidationCancellationDrop() error {
+    let reads = channel<int>(4)
+    let drops = channel<int>(4)
+    var conn = recordStream(error("EOF"), false, true, reads, drops)?
+    var buf = [byte; 3]{0, 0, 0}
+    check(conn.Read(buf[:])? == 3)
+    let _, _ = reads.receive()
+    checkOne(reads)
+    drop(conn)
+    checkOne(drops)
+    let config, _ = configs()?
+    let _, nameErr = ClientStream(context.Background(), script(Array<byte>{}, nil, 0, 0, reads, drops), "bad name", config)
+    check(nameErr != nil)
+    checkOne(drops)
+    let ctx, cancel = context.WithCancel(context.Background())
+    cancel()
+    let _, cancelErr = ClientStream(ctx, script(Array<byte>{}, nil, 0, 0, reads, drops), "localhost", config)
+    check(cancelErr == error("context canceled"))
+    checkOne(drops)
+    return nil
+}

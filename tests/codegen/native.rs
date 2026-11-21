@@ -44,6 +44,7 @@ mod map_entries;
 mod mixed_bindings;
 mod networking;
 mod performance;
+mod proxy_environment;
 mod rand;
 mod regexp;
 mod review_regressions;

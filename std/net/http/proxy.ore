@@ -5,6 +5,7 @@ import "std/net"
 import "std/net/url"
 import "std/strconv"
 import "std/strings"
+import "std/time"
 
 type ProxyConfig struct {
     URL string
@@ -15,32 +16,60 @@ type ClientTunnel interface {
     Tunnel(ctx context.Context, conn own net.Conn, target url.AbsoluteURL) (ClientConn, error)
 }
 
+type ProxyConn interface {
+    mut Read(buf mut []byte) (int, error)
+    mut Write(data []byte) (int, error)
+    mut SetReadDeadline(t time.Instant) error
+    mut SetWriteDeadline(t time.Instant) error
+    mut ClearDeadline() error
+}
+
+type ClientProxyTransport interface {
+    WrapProxy(ctx context.Context, source own net.Conn, proxy url.AbsoluteURL) (ProxyConn, error)
+    Tunnel(ctx context.Context, source own ProxyConn, target url.AbsoluteURL) (ClientConn, error)
+}
+
 type clientProxy struct {
     address string
+    target url.AbsoluteURL
     authorization string
     set bool
 }
 
 func noProxy() clientProxy {
-    return clientProxy{address: "", authorization: "", set: false}
+    return clientProxy{address: "", target: emptyClientURL(), authorization: "", set: false}
 }
 
 func proxySettings(proxy ProxyConfig) (clientProxy, error) {
     let target, err = url.ParseAbsolute(proxy.URL)
-    if err != nil || target.Scheme != "http" || target.RequestTarget != "/" {
+    if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.RequestTarget != "/" {
         _ = err
         return noProxy(), error("http.Client: invalid proxy URL")
     }
     if proxy.Authorization != "" && !fieldValue(proxy.Authorization) {
         return noProxy(), error("http.Client: invalid proxy authorization")
     }
-    return clientProxy{address: target.Address, authorization: proxy.Authorization, set: true}, nil
+    return clientProxy{address: target.Address, target: target, authorization: proxy.Authorization, set: true}, nil
 }
 
-func NewProxyClient(config ClientConfig, proxy ProxyConfig) (Client, error) {
+func proxyClient(config ClientConfig, proxy ProxyConfig) (Client, error) {
     let settings = proxySettings(proxy)?
     var client = NewClient(config)?
     client.proxy = settings
+    return client, nil
+}
+
+func NewProxyClient(config ClientConfig, proxy ProxyConfig) (Client, error) {
+    let client = proxyClient(config, proxy)?
+    if client.proxy.target.Scheme == "https" {
+        return emptyClient(), error("http.Client: HTTPS proxy requires verified TLS transport")
+    }
+    return client, nil
+}
+
+func NewProxyClientWithTransport(config ClientConfig, proxy ProxyConfig, transport own ClientProxyTransport) (Client, error) {
+    var client = proxyClient(config, proxy)?
+    client.proxyTransport.push(transport)
     return client, nil
 }
 
@@ -51,6 +80,9 @@ func NewProxyClientWithTunnel(config ClientConfig, proxy ProxyConfig, tunnel own
 }
 
 func (c Client) proxyDial(ctx context.Context, target url.AbsoluteURL) (ClientConn, error) {
+    if c.proxyTransport.len() != 0 {
+        return c.proxyStreamDial(ctx, target)
+    }
     if target.Scheme != "http" && c.tunnel.len() == 0 {
         return closedClientConn{}, error("http.Client: HTTPS requires verified TLS transport")
     }
@@ -58,7 +90,8 @@ func (c Client) proxyDial(ctx context.Context, target url.AbsoluteURL) (ClientCo
     if dialErr != nil {
         return closedClientConn{}, dialErr
     }
-    let _, conn = conns.pop()
+    let _, taken = conns.pop()
+    var conn = taken
     if target.Scheme == "http" {
         return conn, nil
     }
@@ -77,12 +110,42 @@ func (c Client) proxyDial(ctx context.Context, target url.AbsoluteURL) (ClientCo
     return tunneled, nil
 }
 
-func (c Client) connect(ctx context.Context, conn net.Conn, target url.AbsoluteURL) error {
+func (c Client) proxyStreamDial(ctx context.Context, target url.AbsoluteURL) (ClientConn, error) {
+    var conns = c.dialAddress(ctx, c.proxy.address)?
+    let _, raw = conns.pop()
+    var streams = Array<ProxyConn>{}
+    if c.proxy.target.Scheme == "https" {
+        streams.push(c.proxyTransport[0].WrapProxy(ctx, raw, c.proxy.target)?)
+    } else {
+        streams.push(raw)
+    }
+    let _, taken = streams.pop()
+    var conn = taken
+    if target.Scheme == "http" {
+        return conn, nil
+    }
+    c.connect(ctx, conn, target)?
+    let result = c.proxyTransport[0].Tunnel(ctx, conn, target)?
+    clientContextError(ctx)?
+    return result, nil
+}
+
+func (c Client) proxyRequest(target url.AbsoluteURL) (string, error) {
     var request = "CONNECT " + target.Address + " HTTP/1.1\r\nHost: " + target.Address + "\r\n"
+    if request.len() + 2 > c.config.MaxHeaderBytes {
+        return "", error("http.Client: metadata too large")
+    }
     if c.proxy.authorization != "" {
+        if c.proxy.authorization.len() > c.config.MaxHeaderBytes - request.len() - 25 {
+            return "", error("http.Client: metadata too large")
+        }
         request += "Proxy-Authorization: " + c.proxy.authorization + "\r\n"
     }
-    request += "\r\n"
+    return request + "\r\n", nil
+}
+
+func (c Client) connect(ctx context.Context, conn mut ProxyConn, target url.AbsoluteURL) error {
+    let request = c.proxyRequest(target)?
     let data = strings.Bytes(request)
     let deadline, _ = ctx.Deadline()
     var sent = 0
@@ -96,7 +159,10 @@ func (c Client) connect(ctx context.Context, conn net.Conn, target url.AbsoluteU
             return error("http.Client: invalid write count")
         }
         sent += n
-        if err == error("net.Write: timed out") {
+        if n > 0 {
+            idle = 0
+        }
+        if err == error("net.Write: timed out") || err == ClientPollTimeout {
             continue
         }
         if err != nil {
@@ -119,6 +185,10 @@ func (c Client) connect(ctx context.Context, conn net.Conn, target url.AbsoluteU
             return error("http.Client: proxy response too large")
         }
         let n, err = conn.Read(one[:])
+        _ = err
+        if n < 0 || n > 1 {
+            return error("http.Client: invalid read count")
+        }
         if n == 1 {
             head.push(one[0])
             idle = 0
@@ -127,7 +197,7 @@ func (c Client) connect(ctx context.Context, conn net.Conn, target url.AbsoluteU
             _ = err
             break
         }
-        if err == error("net.Read: timed out") {
+        if err == error("net.Read: timed out") || err == ClientPollTimeout {
             conn.SetReadDeadline(pollDeadline(deadline, c.config.PollInterval))?
             continue
         }

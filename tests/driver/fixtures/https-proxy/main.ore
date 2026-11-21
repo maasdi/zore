@@ -1,0 +1,114 @@
+package main
+
+import "std/context"
+import "std/errors"
+import "std/io"
+import "std/net/http"
+import "std/os"
+import "std/strings"
+import "std/time"
+import "tls/https"
+
+type Payload struct {
+    remaining int
+}
+
+func (p mut Payload) Read(buf mut []byte) (int, error) {
+    if p.remaining == 0 {
+        return 0, io.EOF
+    }
+    var n = buf.len()
+    if n > p.remaining {
+        n = p.remaining
+    }
+    for var i = 0; i < n; i += 1 {
+        buf[i] = 120
+    }
+    p.remaining -= n
+    return n, nil
+}
+
+func show(response http.ClientResponse) error {
+    println(strings.FromBytes(response.Body[:])?)
+    return nil
+}
+
+async func asyncSend(client own http.Client, target string, result channel<error>) {
+    let empty = Array<byte>{}
+    let response, err = client.Do(context.Background(), "GET", target, http.NewHeader(), empty[:])
+    if err != nil {
+        result.send(err);
+        return
+    }
+    result.send(show(response))
+}
+
+func run() error {
+    let args = os.Args()
+    let ports = strings.Split(args[1], " ")
+    let mode = args[3]
+    var proxyHost = "localhost"
+    var targetHost = "localhost"
+    var proxyScheme = "https"
+    if mode == "wrong-proxy" {
+        proxyHost = "127.0.0.1"
+    }
+    if mode == "wrong-target" {
+        targetHost = "127.0.0.1"
+    }
+    if mode == "http-proxy" {
+        proxyScheme = "http"
+    }
+    let proxy = http.ProxyConfig{URL: proxyScheme + "://" + proxyHost + ":" + ports[0] + "/", Authorization: "Basic cHJveHk6c2VjcmV0"}
+    var config = http.DefaultClientConfig()
+    config.Timeout = 3 * time.Second
+    config.PollInterval = 10 * time.Millisecond
+    let roots = os.ReadFile(args[2])?
+    var clients = Array<http.Client>{}
+    if mode == "default" {
+        clients.push(https.NewDefaultProxyClient(config, proxy)?)
+    } else if mode == "direct" {
+        clients.push(https.NewClient(roots[:], config)?)
+    } else {
+        clients.push(https.NewProxyClient(roots[:], config, proxy)?)
+    }
+    let _, client = clients.pop()
+    let target = "https://" + targetHost + ":" + ports[1] + "/inside"
+    let empty = Array<byte>{}
+    if mode == "plain" {
+        show(client.Do(context.Background(), "GET", "http://target.test/absolute?q=1", http.NewHeader(), empty[:])?)?
+    } else if mode == "pool" || mode == "upload" {
+        let pool = http.NewPool(client, http.DefaultPoolConfig())?
+        show(pool.Do(context.Background(), "GET", target, http.NewHeader(), empty[:])?)?
+        if mode == "upload" {
+            show(pool.Upload(context.Background(), "PUT", target, http.NewHeader(), http.NewUnknownLengthBody(Payload{remaining: 150000}), http.DefaultUploadConfig())?)?
+        } else {
+            show(pool.Do(context.Background(), "GET", target, http.NewHeader(), empty[:])?)?
+        }
+        pool.Close()
+    } else if mode == "cancel" || mode == "stall" {
+        let ctx, cancel = context.WithTimeout(context.Background(), 150 * time.Millisecond)
+        let _, err = client.Do(ctx, "GET", target, http.NewHeader(), empty[:])
+        cancel()
+        if err != nil {
+            return err
+        }
+    } else if mode == "async" {
+        let done = channel<error>(1)
+        go asyncSend(client, target, done)
+        let err, _ = done.receive()
+        if err != nil {
+            return err
+        }
+    } else {
+        show(client.Do(context.Background(), "GET", target, http.NewHeader(), empty[:])?)?
+    }
+    return nil
+}
+
+func main() {
+    let err = run();
+    if err != nil {
+        println(errors.Message(err))
+    }
+}

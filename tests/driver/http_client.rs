@@ -186,3 +186,70 @@ fn http2_auto_client_interoperates_with_node_and_falls_back_to_http1() {
         drop(server);
     }
 }
+
+#[test]
+fn https_proxies_verify_both_hops_and_confine_credentials_with_independent_peers() {
+    let directory = TempDir::new().unwrap();
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let app = directory.path().join("examples/https-proxy");
+    copy_tree(&repository.join("tests/driver/fixtures/https-proxy"), &app);
+    let tls = directory.path().join("packages/tls");
+    copy_tree(&repository.join("packages/tls"), &tls);
+    let compiler = directory
+        .path()
+        .join(format!("distributed-zore{}", std::env::consts::EXE_SUFFIX));
+    fs::copy(env!("CARGO_BIN_EXE_zore"), &compiler).unwrap();
+    for action in ["install", "build"] {
+        let mut command = Command::new(&compiler);
+        command
+            .arg(action)
+            .arg("--offline")
+            .arg(if action == "install" { "." } else { "main.ore" })
+            .current_dir(&app)
+            .env("ZORE_CACHE_DIR", directory.path().join("cache"));
+        success(command);
+    }
+    let executable = app.join(format!("main{}", std::env::consts::EXE_SUFFIX));
+    let roots = tls.join("testdata/roots.pem");
+    for (mode, expected) in [
+        ("plain", "proxy http://target.test/absolute?q=1 auth=true\n"),
+        ("nested", "origin /inside auth=false bytes=0 conn=1\n"),
+        ("direct", "origin /inside auth=false bytes=0 conn=1\n"),
+        ("http-proxy", "origin /inside auth=false bytes=0 conn=1\n"),
+        ("async", "origin /inside auth=false bytes=0 conn=1\n"),
+        ("default", "origin /inside auth=false bytes=0 conn=1\n"),
+        (
+            "pool",
+            "origin /inside auth=false bytes=0 conn=1\norigin /inside auth=false bytes=0 conn=1\n",
+        ),
+        (
+            "upload",
+            "origin /inside auth=false bytes=0 conn=1\norigin /inside auth=false bytes=150000 conn=1\n",
+        ),
+        (
+            "refused",
+            "http.Client: proxy refused tunnel with status 407\n",
+        ),
+        ("stall", "context deadline exceeded\n"),
+        ("wrong-proxy", "does not match"),
+        ("wrong-target", "does not match"),
+    ] {
+        let server = node_server(&app.join("server.js"), &tls, mode);
+        let mut run = Command::new(&executable);
+        run.arg(&server.port)
+            .arg(&roots)
+            .arg(mode)
+            .env("ZORE_CHECK_LEAKS", "1")
+            .env("SSL_CERT_FILE", &roots)
+            .env("HTTP_PROXY", "invalid default must ignore")
+            .env("HTTPS_PROXY", "invalid default must ignore")
+            .env("NO_PROXY", "invalid/path");
+        let output = success(run);
+        let actual = String::from_utf8_lossy(&output.stdout);
+        if mode.starts_with("wrong-") {
+            assert!(actual.contains(expected), "{mode}: {actual}");
+        } else {
+            assert_eq!(actual, expected, "{mode}");
+        }
+    }
+}

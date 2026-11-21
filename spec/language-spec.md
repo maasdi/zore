@@ -14060,8 +14060,9 @@ read outside this explicitly called helper. Call it again for a different URL
 or changed environment, then construct the desired client from its result.
 
 For HTTP_PROXY/http_proxy, HTTPS_PROXY/https_proxy and NO_PROXY/no_proxy, the
-uppercase variable wins when present, including an empty value. A selected
-empty proxy value disables that scheme. HTTP and HTTPS targets select their
+uppercase variable wins when present, including an empty value. Names are
+matched exactly against one Environ snapshot, preserving spelling on Windows.
+A selected empty proxy value disables that scheme. HTTP and HTTPS targets select their
 respective proxy variable, whose URL may itself be http or https. Each selected
 value is validated, including the unused scheme; overridden variants are
 ignored. Both proxy URLs and NO_PROXY are limited to 4096 bytes, and at most
@@ -14094,7 +14095,7 @@ or prefixes are errors. All entries are validated before matching.
 CIDR primitives belong below HTTP in std/net:
 
 ```ore
-type IPPrefix struct { /* private network IP and bit count */ }
+type IPPrefix struct { network IP; bits int }
 func ParseIPPrefix(text string) (IPPrefix, error)
 func (p IPPrefix) IsValid() bool
 func (p IPPrefix) Addr() IP

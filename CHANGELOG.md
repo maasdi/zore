@@ -8,6 +8,18 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
 
 ## [Unreleased]
 
+### Verified HTTPS proxies
+
+- HTTPS proxy clients verify the proxy and target independently, with nested
+  TLS for CONNECT. `https.NewDefaultProxyClient` uses system roots; the existing
+  explicit-roots constructor supports either proxy scheme. Owned `tls.Stream`
+  constructors enable nesting while preserving the existing net.Conn APIs.
+- `http.ProxyFromEnvironment` explicitly selects and validates proxy URLs and
+  `NO_PROXY` domains, IPs, CIDRs and ports. Default clients ignore these settings.
+  Credentials are extracted without appearing in errors or target requests.
+- `net.IPPrefix` parses, masks and compares literal networks with distinct
+  IPv4/IPv6 families. CONNECT metadata limits are checked before dialing.
+
 ### String memory reclamation
 
 - Fully returned small-string spans beyond one warm span per size class now

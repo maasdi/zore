@@ -1,0 +1,66 @@
+package https
+
+import "std/context"
+import "std/net"
+import "std/net/http"
+import "std/net/url"
+import "std/time"
+import "tls"
+
+type proxyTransport struct {
+    config tls.ClientConfig
+}
+
+type proxyWire struct {
+    source tls.Conn
+}
+
+func NewProxyClient(rootsPEM []byte, settings http.ClientConfig, proxy http.ProxyConfig) (http.Client, error) {
+    let config = tls.NewClientConfig(rootsPEM)?
+    return http.NewProxyClientWithTransport(settings, proxy, proxyTransport{config: config})
+}
+
+func NewDefaultProxyClient(settings http.ClientConfig, proxy http.ProxyConfig) (http.Client, error) {
+    let config = tls.DefaultClientConfig()?
+    return http.NewProxyClientWithTransport(settings, proxy, proxyTransport{config: config})
+}
+
+func (t proxyTransport) WrapProxy(ctx context.Context, raw own net.Conn, proxy url.AbsoluteURL) (http.ProxyConn, error) {
+    requireHTTPS(proxy)?
+    let source = tls.Client(ctx, raw, proxy.Hostname, t.config)?
+    return proxyWire{source: source}, nil
+}
+
+func (t proxyTransport) Tunnel(ctx context.Context, raw own http.ProxyConn, target url.AbsoluteURL) (http.ClientConn, error) {
+    requireHTTPS(target)?
+    let source = tls.ClientStream(ctx, raw, target.Hostname, t.config)?
+    return conn{source: source}, nil
+}
+
+func (p mut proxyWire) Read(data mut []byte) (int, error) {
+    let n, err = p.source.Read(data)
+    if err == error("tls: timed out") {
+        return n, error("net.Read: timed out")
+    }
+    return n, err
+}
+
+func (p mut proxyWire) Write(data []byte) (int, error) {
+    let n, err = p.source.Write(data)
+    if err == error("tls: timed out") {
+        return n, error("net.Write: timed out")
+    }
+    return n, err
+}
+
+func (p mut proxyWire) SetReadDeadline(t time.Instant) error {
+    return p.source.SetReadDeadline(t)
+}
+
+func (p mut proxyWire) SetWriteDeadline(t time.Instant) error {
+    return p.source.SetWriteDeadline(t)
+}
+
+func (p mut proxyWire) ClearDeadline() error {
+    return p.source.ClearDeadline()
+}
