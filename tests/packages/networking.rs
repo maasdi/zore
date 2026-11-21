@@ -658,7 +658,7 @@ fn proxy_streams_reject_missing_deadlines_and_owned_reuse() {
         ),
     ] {
         let source = format!(
-            "package main\nimport \"std/net\"\nimport \"std/net/http\"\nfunc run(proxy http.ProxyConfig, transport own http.ClientProxyTransport) error {{ {body}; return nil }}\nfunc main() {{}}\n"
+            "package main\nimport \"std/net\"\nimport \"std/net/http\"\nfunc run(proxy http.ProxyConfig, transport own http.ClientProxyTransport) error {{ let _ = net.ParseIP; {body}; return nil }}\nfunc main() {{}}\n"
         );
         super::rejects(&[("main.ore", &source)], expected);
     }
