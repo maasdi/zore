@@ -727,8 +727,13 @@ pub(super) fn release_all() {
                 let base = (first + offset) << PAGE_BITS;
                 if entry == 1 {
                     bases.push(base);
-                } else if entry & SLAB != 0 && entry & DISCARDED == 0 && entry & INDEX_MASK == 0 {
-                    let size = CLASSES[slab_class(entry)];
+                } else if entry & SLAB != 0 && entry & INDEX_MASK == 0 {
+                    let class = slab_class(entry);
+                    let _shared = shared(class);
+                    if page_entry(base) & DISCARDED != 0 {
+                        continue;
+                    }
+                    let size = CLASSES[class];
                     for slot in 0..SPAN / size {
                         let address = base + slot * size;
                         let header = std::ptr::with_exposed_provenance::<Header>(address);
@@ -1467,6 +1472,72 @@ mod tests {
         }
         assert_eq!(live_buffers(), 0);
         assert_eq!(crate::alloc::live_bytes(), bytes_before);
+    }
+
+    #[test]
+    #[cfg(all(not(miri), any(target_os = "linux", target_os = "macos", windows)))]
+    fn teardown_serializes_with_retiring_cache_decommit() {
+        fn protect(base: usize, readable: bool) {
+            #[cfg(unix)]
+            {
+                unsafe extern "C" {
+                    fn mprotect(address: *mut u8, len: usize, flags: i32) -> i32;
+                }
+                let flags = if readable { 3 } else { 0 };
+                // SAFETY: the test owns this page-aligned mapping with no live strings.
+                assert_eq!(
+                    unsafe { mprotect(std::ptr::with_exposed_provenance_mut(base), SPAN, flags) },
+                    0
+                );
+            }
+            #[cfg(not(unix))]
+            let _ = (base, readable);
+        }
+        struct Protection(usize);
+        impl Drop for Protection {
+            fn drop(&mut self) {
+                protect(self.0, true);
+            }
+        }
+        let _serial = serial();
+        release_all();
+        let class = CLASSES.len() - 1;
+        let mut list = FreeList::EMPTY;
+        new_span(class, &mut list);
+        let base = list.next.expose_provenance();
+        let end = list.end.expose_provenance();
+        list.next = std::ptr::null_mut();
+        list.end = std::ptr::null_mut();
+        let _protection = Protection(base);
+        let (ready, decommitted) = std::sync::mpsc::channel();
+        let (resume, paused) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let mut shared = shared(class);
+                shared.spans.push((
+                    std::ptr::with_exposed_provenance_mut(base),
+                    std::ptr::with_exposed_provenance_mut(end),
+                ));
+                shared.states.get_mut(&base).unwrap().reserved = 0;
+                assert!(pages::discard(base));
+                protect(base, false);
+                ready.send(()).unwrap();
+                paused
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                shared.states.get_mut(&base).unwrap().discarded = true;
+                mark(base, SPAN, |index| slab_entry(class, index) | DISCARDED);
+            });
+            decommitted
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            scope.spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                resume.send(()).unwrap();
+            });
+            release_all();
+        });
+        assert_eq!(live_buffers(), 0);
     }
 
     #[test]

@@ -31,6 +31,8 @@ spans to model discard without invoking unsupported OS memory APIs. Native
 tests retain the full 256 KiB spans and workload sizes.
 
 The shared lock serializes discard and recommit with taking slots or remainders.
+Teardown also takes this lock and rechecks the discard marker before scanning a
+span: idle workers can retire their caches after the last task has completed.
 Page-table entries mark discarded spans so teardown skips inaccessible headers,
 including on Windows where decommitted pages cannot be read. Recommit precedes
 clearing the marker and handing a slot to a cache. Ordinary live strings keep a
