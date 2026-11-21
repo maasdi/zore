@@ -68,3 +68,11 @@ because you know the server can cope with a repeat.
 Each try is still limited by `ClientConfig.Timeout`, and the context you pass
 stops everything, waits included. When all tries are used up, you get the last
 answer or the last error.
+
+## Reader uploads
+
+`Client.UploadRetry`, `Pool.UploadRetry` and `HTTP2Conn.UploadRetry` consume an
+explicit `RequestBodyFactory`, which creates a fresh owned body per attempt.
+Reader and factory failures are terminal. See
+[pooled and replayable uploads](http-upload-retries.md) for ownership, timeout
+and unprocessed-request rules.

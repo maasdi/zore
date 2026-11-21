@@ -109,3 +109,11 @@ The maintained `tls/https.AutoClient.Upload` selects verified HTTP/2 or HTTP/1.1
 through ALPN, with no automatic replay. All Upload methods work from plain and
 async code. HTTP/2 can return a completed early response between source reads;
 HTTP/1.1 retains the send-then-receive behavior described above.
+
+## Reuse and explicit replay
+
+`Pool.Upload` reuses a cleanly finished connection for known or unknown bodies.
+`UploadRetry` on `Client`, `Pool` or `HTTP2Conn` takes an owned body factory,
+which creates a fresh source for each eligible attempt. See the
+[pooled and replayable upload guide](http-upload-retries.md) for the contract
+and a file example.

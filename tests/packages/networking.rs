@@ -558,3 +558,52 @@ fn http2_connections_reject_wrong_types() {
         super::rejects(&[("main.ore", &source)], expected);
     }
 }
+
+#[test]
+fn pooled_uploads_and_owned_replay_factories_check_for_plain_and_async_callers() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/context"
+import "std/io"
+import "std/net/http"
+type Empty struct {}
+func (e mut Empty) Read(buf mut []byte) (int, error) { return 0, io.EOF }
+type Bodies struct {}
+func (b mut Bodies) NewBody(ctx context.Context) (http.RequestBody, error) { return http.NewUnknownLengthBody(Empty{}), nil }
+func send(client http.Client, pool http.Pool) error {
+    let ctx = context.Background()
+    let upload = http.DefaultUploadConfig()
+    let retry = http.DefaultRetryConfig()
+    pool.Upload(ctx, "PUT", "http://example.test/", http.NewHeader(), http.NewUnknownLengthBody(Empty{}), upload)?
+    client.UploadRetry(ctx, "PUT", "http://example.test/", http.NewHeader(), Bodies{}, upload, retry)?
+    pool.UploadRetry(ctx, "PUT", "http://example.test/", http.NewHeader(), Bodies{}, upload, retry)?
+    return nil
+}
+async func multiplex(conn http.HTTP2Conn, factory own http.RequestBodyFactory) error {
+    conn.UploadRetry(context.Background(), "PUT", "https://example.test/", http.NewHeader(), factory, http.DefaultUploadConfig(), http.DefaultRetryConfig())?
+    return nil
+}
+func main() {}
+"#,
+    )]);
+}
+
+#[test]
+fn replay_uploads_reject_missing_factories_and_factory_reuse() {
+    for (body, expected) in [
+        (
+            "let _, _ = client.UploadRetry(context.Background(), \"PUT\", \"http://example.test/\", http.NewHeader(), \"bytes\", http.DefaultUploadConfig(), http.DefaultRetryConfig())",
+            "does not satisfy",
+        ),
+        (
+            "let _, _ = client.UploadRetry(context.Background(), \"PUT\", \"http://example.test/\", http.NewHeader(), factory, http.DefaultUploadConfig(), http.DefaultRetryConfig()); let _ = factory",
+            "moved",
+        ),
+    ] {
+        let source = format!(
+            "package main\nimport \"std/context\"\nimport \"std/net/http\"\nfunc send(client http.Client, factory own http.RequestBodyFactory) {{ {body} }}\nfunc main() {{}}\n"
+        );
+        super::rejects(&[("main.ore", &source)], expected);
+    }
+}

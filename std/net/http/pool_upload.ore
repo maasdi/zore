@@ -1,0 +1,53 @@
+package http
+
+import "std/context"
+import "std/strings"
+import "std/time"
+
+func (p Pool) Upload(ctx context.Context, method string, absoluteURL string, headers Header, body own RequestBody, config UploadConfig) (ClientResponse, error) {
+    let settings = uploadSettings(config)?
+    let response, _, err = p.uploadWithin(ctx, method, absoluteURL, headers, body, settings)
+    return response, err
+}
+
+func (p Pool) uploadWithin(ctx context.Context, method string, absoluteURL string, headers Header, body own RequestBody, settings UploadConfig) (ClientResponse, bool, error) {
+    var source = body
+    let output, target, preparationErr = p.prepareLength(ctx, method, absoluteURL, headers, source.length, settings.MaxBodyBytes)
+    if preparationErr != nil {
+        return emptyClientResponse(), true, preparationErr
+    }
+    let uploadCtx, stops = streamContext(ctx, settings.Timeout)
+    let setupCtx, cancel = context.WithDeadline(uploadCtx, time.Now().Add(p.config.Timeout))
+    let guard = clientCancellation{cancel: cancel}
+    var lease, leaseErr = p.lease(setupCtx, target)
+    if leaseErr != nil {
+        return emptyClientResponse(), true, leaseErr
+    }
+    let _, conn = lease.conns.pop()
+    var stream = newClientStream(conn, uploadCtx, p.config, time.Now())
+    stream.idle = settings.IdleTimeout
+    stream.rearm()
+    let head = strings.Bytes(output)
+    let sendErr = stream.uploadSend(head[:])
+    if sendErr != nil {
+        return emptyClientResponse(), !stream.written, stale(sendErr, lease.reused, false)
+    }
+    let bodyErr = stream.uploadBody(source, uploadLimit(source.length, settings, p.config.MaxRequestBodyBytes))
+    if bodyErr != nil {
+        return emptyClientResponse(), !stream.written, bodyErr
+    }
+    stream.idle = 0
+    stream.deadlineAfter(p.config.Timeout)
+    let responseHead, headErr = stream.head(method)
+    if headErr != nil {
+        return emptyClientResponse(), false, stale(headErr, lease.reused, stream.metadata != 0)
+    }
+    let response, responseErr = stream.bufferedBody(responseHead)
+    if responseErr != nil {
+        return emptyClientResponse(), false, responseErr
+    }
+    if responseHead.reusable() && stream.settled() {
+        lease.conns.push(stream.conn)
+    }
+    return response, false, nil
+}

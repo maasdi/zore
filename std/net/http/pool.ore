@@ -203,10 +203,14 @@ func (p Pool) openWithin(ctx context.Context, method string, absoluteURL string,
 }
 
 func (p Pool) prepare(ctx context.Context, method string, absoluteURL string, headers Header, body []byte) (string, url.AbsoluteURL, error) {
+    return p.prepareLength(ctx, method, absoluteURL, headers, body.len(), p.config.MaxRequestBodyBytes)
+}
+
+func (p Pool) prepareLength(ctx context.Context, method string, absoluteURL string, headers Header, length int, limit int) (string, url.AbsoluteURL, error) {
     if !p.live {
         return "", emptyClientURL(), error("http.Pool: empty pool")
     }
-    let output, target, err = p.plain().prepareRequest(method, absoluteURL, headers, body.len(), p.config.MaxRequestBodyBytes, false, p.proxy.set)
+    let output, target, err = p.plain().prepareRequest(method, absoluteURL, headers, length, limit, false, p.proxy.set)
     if err != nil {
         return "", emptyClientURL(), err
     }

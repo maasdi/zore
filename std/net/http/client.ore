@@ -87,6 +87,7 @@ type clientStream struct {
     pending error
     metadata int
     idle time.Duration
+    written bool
 }
 
 func emptyClient() Client {
@@ -268,7 +269,11 @@ func (c Client) Do(ctx context.Context, method string, absoluteURL string, heade
 }
 
 func (c Client) admit(ctx context.Context, method string, absoluteURL string, headers Header, body []byte) (string, url.AbsoluteURL, error) {
-    let output, target, preparationErr = c.prepare(method, absoluteURL, headers, body)
+    return c.admitLength(ctx, method, absoluteURL, headers, body.len(), c.config.MaxRequestBodyBytes)
+}
+
+func (c Client) admitLength(ctx context.Context, method string, absoluteURL string, headers Header, length int, limit int) (string, url.AbsoluteURL, error) {
+    let output, target, preparationErr = c.prepareLength(method, absoluteURL, headers, length, limit)
     if preparationErr != nil {
         return "", emptyClientURL(), preparationErr
     }
@@ -389,7 +394,7 @@ func (c Client) exchangePrepared(ctx context.Context, conn own ClientConn, outpu
 }
 
 func newClientStream(conn own ClientConn, ctx context.Context, config ClientConfig, deadline time.Instant) clientStream {
-    return clientStream{conn: conn, ctx: ctx, config: config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0, idle: 0}
+    return clientStream{conn: conn, ctx: ctx, config: config, deadline: deadline, buffer: Array<byte>{}, spare: Array<Array<byte>>{}, position: 0, pending: nil, metadata: 0, idle: 0, written: false}
 }
 
 func (s mut clientStream) request(output string, body []byte) error {
@@ -434,7 +439,11 @@ func (s mut clientStream) send(data []byte) error {
         let n, err = s.conn.Write(data[position:])
         _ = err
         if n < 0 || n > data.len() - position {
+            s.written = true
             return error("http.Client: invalid write count")
+        }
+        if n > 0 {
+            s.written = true
         }
         position += n
         if n > 0 && s.idle > 0 {

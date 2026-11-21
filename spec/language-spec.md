@@ -13913,7 +13913,8 @@ already-closed pool/HTTP2 connection are checked before the first factory call.
 Each produced body's declared length is checked before sending. A source error,
 invalid count, short known source, no-progress guard or request-size violation
 is terminal, including a source failure observed with bytes when transport
-failure wins the public error. Context cancellation/deadlines stop attempts.
+failure wins the public error. Caller cancellation and total retry deadlines stop further attempts. A transport
+timeout of one attempt follows the normal retry policy.
 An arbitrary blocked factory or Reader must obey its own cooperative context
 contract; the implementation cannot forcibly interrupt user code.
 

@@ -975,3 +975,7 @@ func main() { let err = run(); if err != nil { println("failed " + message(err))
         );
     }
 }
+
+pub(super) fn peer_source() -> &'static str {
+    PROGRAM.split("func script(").next().unwrap()
+}

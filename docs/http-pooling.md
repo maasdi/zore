@@ -109,3 +109,11 @@ the server already acted on it. If the request is safe to repeat, such as a
 already running finish normally, and their connections are closed when they are
 done. `pool.CloseIdle()` only closes the idle connections. When the last copy
 of the pool is gone, its idle connections are closed too.
+
+## Reader bodies
+
+`Pool.Upload` applies the same leases and waiter bounds to owned reader bodies,
+including unknown lengths. A complete reusable response returns the connection;
+a source error or partial upload retires it. `Pool.UploadRetry` additionally
+requires an explicit fresh-body factory. See
+[pooled and replayable uploads](http-upload-retries.md).
