@@ -20,7 +20,8 @@ func run() error {
     let v4 = net.ParseIPPrefix("192.0.2.129/25")?
     check(v4.Contains(net.ParseIP("192.0.2.255")?) && !v4.Contains(net.ParseIP("192.0.2.127")?))
     check(!v4.Contains(net.ParseIP("::ffff:192.0.2.129")?))
-    check(net.ParseIPPrefix("::1/0000")?.String() == "::/0")
+    let paddedZero = net.ParseIPPrefix("::1/0000")?
+    check(paddedZero.String() == "::/0")
     let v6 = net.ParseIPPrefix("::/0")?
     check(v6.Contains(net.ParseIP("::ffff:192.0.2.129")?) && !v6.Contains(net.ParseIP("192.0.2.129")?))
     for text in Array<string>{"", "192.0.2.1", "192.0.2.1/", "192.0.2.1/-1", "192.0.2.1/+1", "192.0.2.1/33", "::1/129", "::1/1/2", "::1/ 1", "[::1]/128", "fe80::1%eth0/64", "127.1/8", "localhost/8", "::1/1x"} {
