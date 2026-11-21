@@ -50,24 +50,21 @@ func (c Client) Upload(ctx context.Context, method string, absoluteURL string, h
     if settingsErr != nil {
         return emptyClientResponse(), settingsErr
     }
-    let output, target, preparationErr = c.prepareLength(method, absoluteURL, headers, body.length, settings.MaxBodyBytes)
+    let response, _, err = c.uploadWithin(ctx, method, absoluteURL, headers, body, settings)
+    return response, err
+}
+
+func (c Client) uploadWithin(ctx context.Context, method string, absoluteURL string, headers Header, body own RequestBody, settings UploadConfig) (ClientResponse, bool, error) {
+    let output, target, preparationErr = c.admitLength(ctx, method, absoluteURL, headers, body.length, settings.MaxBodyBytes)
     if preparationErr != nil {
-        return emptyClientResponse(), preparationErr
-    }
-    if !c.verifies() && target.Scheme != "http" {
-        return emptyClientResponse(), error("http.Client: HTTPS requires verified TLS transport")
-    }
-    let contextErr = clientContextError(ctx)
-    if contextErr != nil {
-        return emptyClientResponse(), contextErr
+        return emptyClientResponse(), true, preparationErr
     }
     let uploadCtx, stops = streamContext(ctx, settings.Timeout)
-    let dialDeadline = time.Now().Add(c.config.Timeout)
-    let dialCtx, stopDial = context.WithDeadline(uploadCtx, dialDeadline)
+    let dialCtx, stopDial = context.WithDeadline(uploadCtx, time.Now().Add(c.config.Timeout))
     let dialGuard = clientCancellation{cancel: stopDial}
     let conn, dialErr = c.dial(dialCtx, target)
     if dialErr != nil {
-        return emptyClientResponse(), dialErr
+        return emptyClientResponse(), true, dialErr
     }
     return c.uploadPrepared(uploadCtx, stops, conn, output, method, body, settings)
 }
@@ -86,10 +83,11 @@ func (c Client) UploadExchange(ctx context.Context, conn own ClientConn, method 
         return emptyClientResponse(), contextErr
     }
     let uploadCtx, stops = streamContext(ctx, settings.Timeout)
-    return c.uploadPrepared(uploadCtx, stops, conn, output, method, body, settings)
+    let response, _, err = c.uploadPrepared(uploadCtx, stops, conn, output, method, body, settings)
+    return response, err
 }
 
-func (c Client) uploadPrepared(ctx context.Context, stops own Array<streamStop>, conn own ClientConn, output string, method string, body own RequestBody, settings UploadConfig) (ClientResponse, error) {
+func (c Client) uploadPrepared(ctx context.Context, stops own Array<streamStop>, conn own ClientConn, output string, method string, body own RequestBody, settings UploadConfig) (ClientResponse, bool, error) {
     var source = body
     var stream = newClientStream(conn, ctx, c.config, time.Now())
     stream.idle = settings.IdleTimeout
@@ -97,15 +95,16 @@ func (c Client) uploadPrepared(ctx context.Context, stops own Array<streamStop>,
     let head = strings.Bytes(output)
     let headErr = stream.uploadSend(head[:])
     if headErr != nil {
-        return emptyClientResponse(), headErr
+        return emptyClientResponse(), !stream.written, headErr
     }
     let bodyErr = stream.uploadBody(source, uploadLimit(source.length, settings, c.config.MaxRequestBodyBytes))
     if bodyErr != nil {
-        return emptyClientResponse(), bodyErr
+        return emptyClientResponse(), !stream.written, bodyErr
     }
     stream.idle = 0
     stream.deadlineAfter(c.config.Timeout)
-    return stream.response(method)
+    let response, err = stream.response(method)
+    return response, false, err
 }
 
 func uploadLimit(length int, settings UploadConfig, clientLimit int) int {

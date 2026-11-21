@@ -13,6 +13,17 @@ type RetryConfig struct {
     RetryUnsafe bool
 }
 
+type retryOutcome struct {
+    response ClientResponse
+    failure error
+    replay bool
+    unprocessed bool
+}
+
+func bufferedRetry(response own ClientResponse, failure error) retryOutcome {
+    return retryOutcome{response: response, failure: failure, replay: true, unprocessed: false}
+}
+
 func DefaultRetryConfig() RetryConfig {
     return RetryConfig{MaxAttempts: 3, Backoff: 200 * time.Millisecond, MaxBackoff: 5 * time.Second, Timeout: 0, RetryUnsafe: false}
 }
@@ -77,9 +88,13 @@ func retryWait(ctx context.Context, wait time.Duration) error {
     }
 }
 
-func retrying(ctx context.Context, method string, config RetryConfig, check func() error, send func(context.Context) (ClientResponse, error)) (ClientResponse, error) {
+func retrying(ctx context.Context, method string, config RetryConfig, check func() error, send func(context.Context) retryOutcome) (ClientResponse, error) {
     let settings = retrySettings(config)?
     check()?
+    return retryPrepared(ctx, method, settings, send)
+}
+
+func retryPrepared(ctx context.Context, method string, settings RetryConfig, send func(context.Context) retryOutcome) (ClientResponse, error) {
     var bounded = ctx
     var stop = func() {}
     if settings.Timeout > 0 {
@@ -88,10 +103,7 @@ func retrying(ctx context.Context, method string, config RetryConfig, check func
         stop = cancel
     }
     let guard = clientCancellation{cancel: stop}
-    var attempts = settings.MaxAttempts
-    if !settings.RetryUnsafe && !retrySafe(method) {
-        attempts = 1
-    }
+    let attempts = settings.MaxAttempts
     var backoff = settings.Backoff
     if backoff > settings.MaxBackoff {
         backoff = settings.MaxBackoff
@@ -99,9 +111,12 @@ func retrying(ctx context.Context, method string, config RetryConfig, check func
     var attempt = 0
     for {
         attempt += 1
-        let response, err = send(bounded)
+        let outcome = send(bounded)
+        let allowed = outcome.replay && (settings.RetryUnsafe || retrySafe(method) || outcome.failure != nil && outcome.unprocessed)
+        let response = outcome.response
+        let err = outcome.failure
         let ended = clientContextError(bounded)
-        if ended != nil || attempt >= attempts {
+        if ended != nil || attempt >= attempts || !allowed {
             _ = ended
             return response, err
         }
@@ -141,8 +156,9 @@ func (c Client) DoRetry(ctx context.Context, method string, absoluteURL string, 
     return retrying(ctx, method, config, func() error {
         let _, _, err = c.admit(ctx, method, absoluteURL, headers, body)
         return err
-    }, func(attemptCtx context.Context) (ClientResponse, error) {
-        return c.Do(attemptCtx, method, absoluteURL, headers, body)
+    }, func(attemptCtx context.Context) retryOutcome {
+        let response, err = c.Do(attemptCtx, method, absoluteURL, headers, body)
+        return bufferedRetry(response, err)
     })
 }
 
@@ -159,7 +175,8 @@ func (p Pool) DoRetry(ctx context.Context, method string, absoluteURL string, he
             return error("http.Pool: closed")
         }
         return nil
-    }, func(attemptCtx context.Context) (ClientResponse, error) {
-        return p.Do(attemptCtx, method, absoluteURL, headers, body)
+    }, func(attemptCtx context.Context) retryOutcome {
+        let response, err = p.Do(attemptCtx, method, absoluteURL, headers, body)
+        return bufferedRetry(response, err)
     })
 }

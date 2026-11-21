@@ -32,6 +32,7 @@ mod http_redirect;
 mod http_retry;
 mod http_stream;
 mod http_upload;
+mod http_upload_retry;
 mod interface_acceptance;
 mod io_adapters;
 mod json;

@@ -217,6 +217,16 @@ frontend API and rejections, and the `TestHTTPSPool` cases in
 [examples/https-client/https_test.ore](../../examples/https-client/https_test.ore)
 reuse one verified HTTPS connection and reject a wrong host.
 
+## Pooled and explicitly replayable uploads — issue #308
+
+Locked §37.54 adds `Pool.Upload`, `RequestBodyFactory` and Client/Pool/HTTP2Conn
+`UploadRetry`. `tests/codegen/http_upload_retry.rs` covers factory/body drops,
+source failures including masked errors, known and unknown limits, zero-write
+versus partial-write proofs, statuses and timeouts, HTTP/2 refusal/GOAWAY and
+sibling reuse, actual keep-alive reuse and partial retirement, and canceled or
+rejected owned readers on one worker. Frontend cases validate ownership and
+reject ordinary bodies or reused factories.
+
 ## Unknown-length HTTP uploads — issue #307
 
 Locked §37.53 adds `http.NewUnknownLengthBody`, `HTTP2Conn.Upload` and verified

@@ -13040,8 +13040,8 @@ func (p Pool) DoRetry(ctx context.Context, method string, absoluteURL string,
 
 Each attempt is one `Do` of the same client or pool with the same method, URL,
 headers and body, under the rules of §37.11 or §37.43. The body is a byte slice,
-so every attempt sends the same bytes; streamed uploads and streamed responses
-are never retried. The defaults are 3 attempts in total, a first wait of 200
+so every attempt sends the same bytes. Streamed responses are never retried;
+explicitly replayable reader uploads are defined separately in §37.54. The defaults are 3 attempts in total, a first wait of 200
 milliseconds, a longest wait of 5 seconds, no total timeout and no retries of
 unsafe methods. A zero `MaxAttempts`, `Backoff` or `MaxBackoff` selects its
 default and a zero `Timeout` means no limit beyond the caller's context.
@@ -13094,8 +13094,8 @@ one and five attempts, doubling waits, `Retry-After` honoured or above the cap,
 a total timeout shorter than the wait, cancellation during a wait, negative
 configuration, invalid requests, HTTPS without a transport and a closed pool
 that never send, and pooled retries; frontend type rejections; and the retry
-guide over real TCP. Retries of streamed uploads, proxies and decoding remain
-excluded.
+guide over real TCP. Reader-upload retries are added separately by §37.54;
+this section does not add implicit replay to ordinary Upload calls.
 
 ## 37.46 HTTP client content decoding — LOCKED
 
@@ -13865,6 +13865,116 @@ uploads, sibling progress, early responses, limits, failures and stream-local
 cancellation. Independent Node.js peers exercise HTTP/1.1 and HTTP/2, including
 verified HTTPS routing. Large generators prove bounded memory. Plain/async
 and cleanup cases run on Linux, macOS and Windows.
+
+## 37.54 Pooled and explicitly replayable HTTP uploads — LOCKED
+
+Issue #308 extends the reader-upload contract without making ordinary Upload
+retry. Public names belong to std/net/http:
+
+```ore
+type RequestBodyFactory interface {
+    mut NewBody(ctx context.Context) (RequestBody, error)
+}
+func (p Pool) Upload(ctx context.Context, method string, absoluteURL string,
+                     headers Header, body own RequestBody,
+                     config UploadConfig) (ClientResponse, error)
+func (c Client) UploadRetry(ctx context.Context, method string, absoluteURL string,
+                            headers Header, factory own RequestBodyFactory,
+                            upload UploadConfig, retry RetryConfig) (ClientResponse, error)
+func (p Pool) UploadRetry(ctx context.Context, method string, absoluteURL string,
+                          headers Header, factory own RequestBodyFactory,
+                          upload UploadConfig, retry RetryConfig) (ClientResponse, error)
+func (h HTTP2Conn) UploadRetry(ctx context.Context, method string, absoluteURL string,
+                               headers Header, factory own RequestBodyFactory,
+                               upload UploadConfig, retry RetryConfig) (ClientResponse, error)
+```
+
+Pool.Upload accepts known and unknown bodies, uses existing per-origin leases,
+waiter/cancellation limits and verified/proxy admission, and writes keep-alive
+requests. It returns a connection only after successful upload and a completely
+consumed, reusable, unambiguous buffered response. Every partial upload, source
+failure, timeout, cancellation, parse/response failure or panic retires the
+connection. Pool.Upload never automatically retries a stale reused connection.
+Its limits, phase timeouts, unknown chunk framing and source ownership follow
+§§37.42/37.53. Setup (waiting and dialing) is bounded by ClientConfig.Timeout;
+UploadConfig.Timeout and caller context cover the whole call.
+
+UploadRetry consumes its factory and invokes NewBody once per actual attempt,
+with the attempt context, to obtain a fresh owned known/unknown body. The caller
+must produce the same intended request payload; no bytes are cloned, retained,
+automatically buffered or rewound. A factory error is terminal and unchanged.
+Each body is dropped before backoff or another factory call; the factory is
+dropped exactly once on success, validation/factory/source/network failure,
+cancellation and panic. The ordinary Upload APIs remain single-attempt, even
+when a request was provably unprocessed.
+
+Retry/upload configuration, method, URL, headers, transport admission and an
+already-closed pool/HTTP2 connection are checked before the first factory call.
+Each produced body's declared length is checked before sending. A source error,
+invalid count, short known source, no-progress guard or request-size violation
+is terminal, including a source failure observed with bytes when transport
+failure wins the public error. Caller cancellation and total retry deadlines stop further attempts. A transport
+timeout of one attempt follows the normal retry policy.
+An arbitrary blocked factory or Reader must obey its own cooperative context
+contract; the implementation cannot forcibly interrupt user code.
+
+RetryConfig selects the same defaults, total-attempt count, safe methods,
+RetryUnsafe, statuses, backoff and Retry-After behavior as §37.45. A valid factory
+is necessary for every replay. In addition, an error proving the request was
+not processed permits replay of an unsafe method without RetryUnsafe. HTTP/1
+proof means no request byte was handed to the connection: dialing/setup or a
+failure before the first positive Write. Any positive header/body write, or
+an invalid write count, loses this proof. Source failures remain terminal.
+HTTP/2 REFUSED_STREAM / request-not-processed errors provide explicit proof.
+No local cancellation, ordinary reset or partial write implies rollback.
+
+A fixed HTTP2Conn cannot redial after GOAWAY/closure; it returns the connection's
+unprocessed error when further admission is impossible. It may replay refused
+streams while the connection remains usable. This section does not add implicit
+replays to AutoClient.Upload or a new automatic HTTPS routing retry policy.
+
+RetryConfig.Timeout covers all attempts, factory calls and waits; caller
+context also bounds everything. UploadConfig.Timeout covers each attempt,
+starting before NewBody, and the existing upload phase/idle limits still apply.
+Time in a factory/read is not network idle time. As in §37.45, no next attempt
+starts after the total deadline; cancellation during backoff returns its context
+error; otherwise exhausted attempts return the last outcome unchanged. Backoff
+holds neither a source nor a connection lease.
+
+Plain/async behavior and ownership rules are unchanged. Compiler impact is
+bundled HTTP sources, no syntax, runtime, native provider or unsafe surface.
+
+Conformance: pooled known/unknown reuse over one connection, source/transport
+partial failure retirement, exact drop traces, waiter bounds, cancellation and
+panic cleanup; explicit factory call/attempt counts; no replay without a
+factory; source/factory/limit failures terminal; safe/unsafe policies and
+unprocessed proof; Retry-After, total/attempt timeout and backoff cancellation;
+HTTP2 refusal with sibling progress; frontend ownership/privacy/type rejection;
+plain/async callers and all supported hosts.
+
+```ore
+import "std/context"
+import "std/net/http"
+import "std/os"
+
+type FileBodies struct { path string }
+func (f mut FileBodies) NewBody(ctx context.Context) (http.RequestBody, error) {
+    let info = os.Stat(f.path)?
+    let file = os.Open(f.path)?
+    return http.NewRequestBody(file, info.Size())
+}
+func store(pool http.Pool, path string, target string) error {
+    let response = pool.UploadRetry(context.Background(), "PUT", target,
+        http.NewHeader(), FileBodies{path: path}, http.DefaultUploadConfig(),
+        http.DefaultRetryConfig())?
+    println(response.StatusCode)
+    return nil
+}
+```
+
+The factory owns each opened file through its returned body. Reopening a path
+can observe changed contents; callers that require identical bytes must keep
+the underlying data stable across attempts.
 
 # 38. Self-Hosting Constraint
 

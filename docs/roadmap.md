@@ -38,6 +38,12 @@ first-come waiting with cancellation and a waiter limit, idle expiry, no
 automatic replay of stale connections and an explicit `Close`. See the
 [pooling guide](http-pooling.md).
 
+Issue [#308](https://github.com/maasdi/zore/issues/308) adds pooled reader
+uploads and explicit replay factories under §37.54. `Pool.Upload` reuses clean
+connections and retires partial failures; `UploadRetry` creates a fresh body
+only for eligible attempts. Source errors remain terminal. See the
+[replayable upload guide](http-upload-retries.md).
+
 Issue [#287](https://github.com/maasdi/zore/issues/287) adds streamed HTTP
 client uploads under §37.42: `Client.Upload` sends an owned `RequestBody` (a
 reader plus its exact length) piece by piece with bounded memory, its own size

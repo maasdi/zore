@@ -124,6 +124,14 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   fails with `http.Pool: reused connection closed` and is never sent again.
   `Close` shuts the pool down without cutting off calls already running.
 
+### Pooled and explicitly replayable uploads
+
+- Added `Pool.Upload` for known and unknown reader bodies, with normal lease
+  limits, reusable responses and retirement after partial failures.
+- Added owned `RequestBodyFactory` and `UploadRetry` on Client, Pool and
+  HTTP2Conn. Replay requires a fresh caller-provided body; source failures are
+  terminal. Unsafe methods require explicit opt-in or proof of no processing.
+
 ### Unknown-length HTTP uploads
 
 - Added `http.NewUnknownLengthBody` and running request-size limits with bounded

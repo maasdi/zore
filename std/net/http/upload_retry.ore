@@ -1,0 +1,129 @@
+package http
+
+import "std/context"
+import "std/io"
+
+type RequestBodyFactory interface {
+    mut NewBody(ctx context.Context) (RequestBody, error)
+}
+
+type replayReader struct {
+    source io.Reader
+    observed Mutex<bool>
+    remaining int
+    known bool
+    empty int
+}
+
+func (r mut replayReader) Read(buf mut []byte) (int, error) {
+    let n, err = r.source.Read(buf)
+    var broken = n < 0 || n > buf.len() || n > r.remaining
+    if !broken {
+        r.remaining -= n
+    }
+    if n > 0 {
+        r.empty = 0
+    } else if err == nil {
+        r.empty += 1
+    }
+    if r.empty >= uploadEmptyReads || err != nil && err != io.EOF || err == io.EOF && r.known && r.remaining > 0 {
+        broken = true
+    }
+    if broken {
+        r.observed.withLock(func(failed mut bool) {
+            failed = true
+        })
+    }
+    return n, err
+}
+
+func replayUploads(ctx context.Context, method string, factory own RequestBodyFactory, upload UploadConfig, retry RetryConfig, clientLimit int, check func(context.Context) error, send func(context.Context, own RequestBody, UploadConfig) (ClientResponse, bool, error)) (ClientResponse, error) {
+    let settings = uploadSettings(upload)?
+    let retries = retrySettings(retry)?
+    var source = factory
+    return retryPrepared(ctx, method, retries, func(attemptCtx context.Context) retryOutcome {
+        let admissionErr = check(attemptCtx)
+        if admissionErr != nil {
+            return retryOutcome{response: emptyClientResponse(), failure: admissionErr, replay: false, unprocessed: true}
+        }
+        let bounded, stops = streamContext(attemptCtx, settings.Timeout)
+        let body, factoryErr = source.NewBody(bounded)
+        if factoryErr != nil {
+            return retryOutcome{response: emptyClientResponse(), failure: factoryErr, replay: false, unprocessed: true}
+        }
+        let length = body.length
+        let observed = mutex(length >= 0 && length > settings.MaxBodyBytes)
+        var remaining = uploadLimit(length, settings, clientLimit)
+        if length >= 0 {
+            remaining = length
+        }
+        let reader = replayReader{source: body.source, observed: observed, remaining: remaining, known: length >= 0, empty: 0}
+        var tracked = RequestBody{source: reader, length: length}
+        let response, unprocessed, err = send(bounded, tracked, settings)
+        let broken = observed.withLock(func(failed mut bool) bool {
+            return failed
+        })
+        if broken {
+            return retryOutcome{response: response, failure: err, replay: false, unprocessed: unprocessed}
+        }
+        let closed = check(attemptCtx)
+        return retryOutcome{response: response, failure: err, replay: closed == nil, unprocessed: unprocessed}
+    })
+}
+
+func (c Client) UploadRetry(ctx context.Context, method string, absoluteURL string, headers Header, factory own RequestBodyFactory, upload UploadConfig, retry RetryConfig) (ClientResponse, error) {
+    return replayUploads(ctx, method, factory, upload, retry, c.config.MaxRequestBodyBytes, func(checkCtx context.Context) error {
+        let _, _, err = c.admitLength(checkCtx, method, absoluteURL, headers, -1, c.config.MaxRequestBodyBytes)
+        return err
+    }, func(attemptCtx context.Context, body own RequestBody, settings UploadConfig) (ClientResponse, bool, error) {
+        return c.uploadWithin(attemptCtx, method, absoluteURL, headers, body, settings)
+    })
+}
+
+func (p Pool) uploadAdmission(ctx context.Context, method string, absoluteURL string, headers Header) error {
+    let _, _, err = p.prepareLength(ctx, method, absoluteURL, headers, -1, p.config.MaxRequestBodyBytes)
+    if err != nil {
+        return err
+    }
+    let closed = p.state.withLock(func(s mut poolState) bool {
+        return s.closed
+    })
+    if closed {
+        return error("http.Pool: closed")
+    }
+    return nil
+}
+
+func (p Pool) UploadRetry(ctx context.Context, method string, absoluteURL string, headers Header, factory own RequestBodyFactory, upload UploadConfig, retry RetryConfig) (ClientResponse, error) {
+    return replayUploads(ctx, method, factory, upload, retry, p.config.MaxRequestBodyBytes, func(checkCtx context.Context) error {
+        return p.uploadAdmission(checkCtx, method, absoluteURL, headers)
+    }, func(attemptCtx context.Context, body own RequestBody, settings UploadConfig) (ClientResponse, bool, error) {
+        return p.uploadWithin(attemptCtx, method, absoluteURL, headers, body, settings)
+    })
+}
+
+func (h HTTP2Conn) uploadAdmission(ctx context.Context, method string, absoluteURL string, headers Header) error {
+    if !h.live {
+        return error("http2: closed connection")
+    }
+    let _, fieldsErr = h.requestFields(method, absoluteURL, headers, -1)
+    if fieldsErr != nil {
+        return fieldsErr
+    }
+    clientContextError(ctx)?
+    return h.shared.withLock(func(s mut h2Shared) error {
+        if s.closed || s.closing {
+            return h2Reason(s.failure, error("http2: closed connection"))
+        }
+        return nil
+    })
+}
+
+func (h HTTP2Conn) UploadRetry(ctx context.Context, method string, absoluteURL string, headers Header, factory own RequestBodyFactory, upload UploadConfig, retry RetryConfig) (ClientResponse, error) {
+    return replayUploads(ctx, method, factory, upload, retry, h.config.MaxRequestBodyBytes, func(checkCtx context.Context) error {
+        return h.uploadAdmission(checkCtx, method, absoluteURL, headers)
+    }, func(attemptCtx context.Context, body own RequestBody, settings UploadConfig) (ClientResponse, bool, error) {
+        let response, err = h.Upload(attemptCtx, method, absoluteURL, headers, body, settings)
+        return response, err == error("http2: request not processed"), err
+    })
+}
