@@ -38,6 +38,9 @@ type h2Request struct {
     streamed bool
     pipe Mutex<h2Pipe>
     notify channel<bool>
+    upload bool
+    input Mutex<h2UploadInput>
+    inputWake channel<bool>
 }
 
 type h2Pipe struct {
@@ -151,10 +154,18 @@ func (h HTTP2Conn) Close() {
 }
 
 func h2Wake() h2Request {
-    return h2Request{ticket: 0, wake: true, fields: Array<hpack.Field>{}, body: Array<byte>{}, head: false, done: channel<h2Result>(1), streamed: false, pipe: mutex(emptyH2Pipe()), notify: channel<bool>(1)}
+    return h2Request{ticket: 0, wake: true, fields: Array<hpack.Field>{}, body: Array<byte>{}, head: false, done: channel<h2Result>(1), streamed: false, pipe: mutex(emptyH2Pipe()), notify: channel<bool>(1), upload: false, input: mutex(emptyH2UploadInput()), inputWake: channel<bool>(1)}
 }
 
 func (h HTTP2Conn) requestFields(method string, absoluteURL string, headers Header, length int) (Array<hpack.Field>, error) {
+    var declared = length
+    if declared == 0 {
+        declared = -1
+    }
+    return h.requestFieldsLimit(method, absoluteURL, headers, declared, h.config.MaxRequestBodyBytes)
+}
+
+func (h HTTP2Conn) requestFieldsLimit(method string, absoluteURL string, headers Header, length int, limit int) (Array<hpack.Field>, error) {
     var fields = Array<hpack.Field>{}
     if !token(method) || asciiEqual(method, "CONNECT") || asciiEqual(method, "TRACE") {
         return fields, error("http.Client: unsupported or invalid method")
@@ -163,14 +174,14 @@ func (h HTTP2Conn) requestFields(method string, absoluteURL string, headers Head
     if urlErr != nil {
         return fields, urlErr
     }
-    if length > h.config.MaxRequestBodyBytes {
+    if length > limit {
         return fields, error("http.Client: request body too large")
     }
     fields.push(hpack.Field{Name: ":method", Value: method, Sensitive: false})
     fields.push(hpack.Field{Name: ":scheme", Value: target.Scheme, Sensitive: false})
     fields.push(hpack.Field{Name: ":authority", Value: target.Authority, Sensitive: false})
     fields.push(hpack.Field{Name: ":path", Value: target.RequestTarget, Sensitive: false})
-    if length > 0 {
+    if length >= 0 {
         fields.push(hpack.Field{Name: "content-length", Value: strconv.Itoa(length), Sensitive: false})
     }
     var size = 0
@@ -281,29 +292,7 @@ func (h HTTP2Conn) submit(ctx context.Context, method string, absoluteURL string
         payload.push(value)
     }
     let done = channel<h2Result>(1)
-    var slot = Array<h2Request>{}
-    slot.push(h2Request{ticket: 0, wake: false, fields: fields, body: payload, head: method == "HEAD", done: done, streamed: streamed, pipe: pipe, notify: wake})
-    let work = h.work
-    let limit = h.limits.MaxStreams + h.limits.MaxWaiters
-    let ticket, admitErr = h.shared.withLock(func(s mut h2Shared) (int, error) {
-        if s.closed || s.closing {
-            if s.failure != nil {
-                return 0, s.failure
-            }
-            return 0, error("http2: closed connection")
-        }
-        if s.inFlight >= limit || s.queued >= limit {
-            return 0, error("http2: too many waiting requests")
-        }
-        s.inFlight += 1
-        s.queued += 1
-        s.next += 1
-        let _, taken = slot.pop()
-        var request = taken
-        request.ticket = s.next
-        work.send(request)
-        return s.next, nil
-    })
+    let ticket, admitErr = h.enqueue(h2Request{ticket: 0, wake: false, fields: fields, body: payload, head: method == "HEAD", done: done, streamed: streamed, pipe: pipe, notify: wake, upload: false, input: mutex(emptyH2UploadInput()), inputWake: channel<bool>(1)})
     if admitErr != nil {
         return emptyClientResponse(), 0, admitErr
     }
@@ -418,4 +407,30 @@ func (r mut ResponseStream) failHTTP2(err error) error {
     r.failure = err
     r.release()
     return err
+}
+
+func (h HTTP2Conn) enqueue(request own h2Request) (int, error) {
+    var slot = Array<h2Request>{}
+    slot.push(request)
+    let work = h.work
+    let limit = h.limits.MaxStreams + h.limits.MaxWaiters
+    return h.shared.withLock(func(s mut h2Shared) (int, error) {
+        if s.closed || s.closing {
+            if s.failure != nil {
+                return 0, s.failure
+            }
+            return 0, error("http2: closed connection")
+        }
+        if s.inFlight >= limit || s.queued >= limit {
+            return 0, error("http2: too many waiting requests")
+        }
+        s.inFlight += 1
+        s.queued += 1
+        s.next += 1
+        let _, taken = slot.pop()
+        var request = taken
+        request.ticket = s.next
+        work.send(request)
+        return s.next, nil
+    })
 }

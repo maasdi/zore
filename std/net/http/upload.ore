@@ -2,6 +2,7 @@ package http
 
 import "std/context"
 import "std/io"
+import "std/strconv"
 import "std/strings"
 import "std/time"
 
@@ -24,6 +25,10 @@ func NewRequestBody(source own io.Reader, length int) (RequestBody, error) {
         return RequestBody{source: source, length: 0}, error("http.NewRequestBody: negative length")
     }
     return RequestBody{source: source, length: length}, nil
+}
+
+func NewUnknownLengthBody(source own io.Reader) RequestBody {
+    return RequestBody{source: source, length: -1}
 }
 
 func (b RequestBody) Len() int {
@@ -94,7 +99,7 @@ func (c Client) uploadPrepared(ctx context.Context, stops own Array<streamStop>,
     if headErr != nil {
         return emptyClientResponse(), headErr
     }
-    let bodyErr = stream.uploadBody(source)
+    let bodyErr = stream.uploadBody(source, uploadLimit(source.length, settings, c.config.MaxRequestBodyBytes))
     if bodyErr != nil {
         return emptyClientResponse(), bodyErr
     }
@@ -103,7 +108,17 @@ func (c Client) uploadPrepared(ctx context.Context, stops own Array<streamStop>,
     return stream.response(method)
 }
 
-func (s mut clientStream) uploadBody(body mut RequestBody) error {
+func uploadLimit(length int, settings UploadConfig, clientLimit int) int {
+    if length < 0 && clientLimit < settings.MaxBodyBytes {
+        return clientLimit
+    }
+    return settings.MaxBodyBytes
+}
+
+func (s mut clientStream) uploadBody(body mut RequestBody, limit int) error {
+    if body.length < 0 {
+        return s.uploadUnknown(body, limit)
+    }
     var size = uploadChunkBytes
     if body.length < size {
         size = body.length
@@ -115,6 +130,10 @@ func (s mut clientStream) uploadBody(body mut RequestBody) error {
     var remaining = body.length
     var empty = 0
     for remaining > 0 {
+        let contextErr = clientContextError(s.ctx)
+        if contextErr != nil {
+            return contextErr
+        }
         var want = buffer.len()
         if want > remaining {
             want = remaining
@@ -157,4 +176,59 @@ func (s mut clientStream) uploadSend(data []byte) error {
         return error("http.Client: upload idle timeout")
     }
     return err
+}
+
+func (s mut clientStream) uploadUnknown(body mut RequestBody, limit int) error {
+    var buffer = Array<byte>{}
+    for buffer.len() < uploadChunkBytes {
+        buffer.push(0)
+    }
+    var remaining = limit
+    var empty = 0
+    for {
+        let contextErr = clientContextError(s.ctx)
+        if contextErr != nil {
+            return contextErr
+        }
+        var want = buffer.len()
+        if remaining < want {
+            want = remaining + 1
+        }
+        let n, err = body.source.Read(buffer[:want])
+        if n < 0 || n > want {
+            _ = err;
+            return error("http.Client: invalid read count")
+        }
+        if n > remaining {
+            _ = err;
+            return error("http.Client: request body too large")
+        }
+        if n > 0 {
+            empty = 0
+            remaining -= n
+            let prefix = strings.Bytes(strconv.FormatInt(n, 16) + "\r\n")
+            var failure = s.uploadSend(prefix[:])
+            if failure == nil {
+                failure = s.uploadSend(buffer[:n])
+            }
+            if failure == nil {
+                failure = s.uploadSend(strings.Bytes("\r\n")[:])
+            }
+            if failure != nil {
+                _ = err;
+                return failure
+            }
+        } else if err == nil {
+            empty += 1
+            if empty >= uploadEmptyReads {
+                return error("http.Client: request body made no progress")
+            }
+        }
+        if err == io.EOF {
+            return s.uploadSend(strings.Bytes("0\r\n\r\n")[:])
+        }
+        if err != nil {
+            return err
+        }
+    }
 }

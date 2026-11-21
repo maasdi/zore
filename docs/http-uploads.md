@@ -58,8 +58,10 @@ that many bytes:
 
 `UploadConfig` controls an upload:
 
-- `MaxBodyBytes` is the largest size allowed, 64 GiB by default. A bigger size
-  fails before connecting. The 1 MiB limit of `ClientConfig` does not apply.
+- `MaxBodyBytes` is the largest size allowed, 64 GiB by default. A bigger known
+  size fails before connecting. Known-length reader bodies are independent of
+  `ClientConfig.MaxRequestBodyBytes`. Unknown bodies use the smaller of those
+  limits, checked as bytes are read.
 - `IdleTimeout`, 30 seconds by default, stops an upload when the network takes
   nothing for that long: `http.Client: upload idle timeout`. A slow upload that
   keeps moving is never cut off by it.
@@ -76,3 +78,34 @@ everything. If it still reads the rest, you get its reply as a normal response.
 If it stops reading, the upload fails with a network error instead. Either way
 the server may already have acted on part of the request; the client never sends
 it again by itself.
+
+## When the size is unknown
+
+Use `http.NewUnknownLengthBody(source)` when a generator or pipe has no declared
+size. It takes ownership without reading and `body.Len()` returns -1. With
+HTTP/1.1, Upload sends chunked encoding and ends it only after clean EOF. A
+server that requires Content-Length can return 411; the client never buffers
+or replays the reader to try again. `NewRequestBody` still rejects negative
+lengths.
+
+Unknown bodies are limited to 1 MiB by default through
+`ClientConfig.MaxRequestBodyBytes`. Raise that limit and `UploadConfig.MaxBodyBytes`
+when needed. A read that exceeds the remaining budget fails before any of that
+read is sent. Reads use at most 32 KiB, so memory stays bounded independently of
+the total length. Valid bytes returned together with a source error are handed
+off before that error is reported.
+
+## HTTP/2 and verified HTTPS
+
+`HTTP2Conn.Upload` accepts known and unknown bodies. Unknown bodies omit
+Content-Length and use DATA frames, with END_STREAM on clean EOF. Reads stay on
+the calling task, and a single 32 KiB slot hands data to the connection engine.
+Both flow-control windows apply; a stalled upload leaves sibling streams able
+to make progress. Cancellation or a reader failure resets only its stream.
+The idle timeout measures handoff progress and excludes time in the reader.
+An arbitrary blocked reader must support cancellation through its own API.
+
+The maintained `tls/https.AutoClient.Upload` selects verified HTTP/2 or HTTP/1.1
+through ALPN, with no automatic replay. All Upload methods work from plain and
+async code. HTTP/2 can return a completed early response between source reads;
+HTTP/1.1 retains the send-then-receive behavior described above.

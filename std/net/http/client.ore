@@ -201,7 +201,12 @@ func (c Client) prepareRequest(method string, absoluteURL string, headers Header
     if viaProxy && target.Scheme == "http" {
         requestTarget = "http://" + target.Authority + target.RequestTarget
     }
-    var output = method + " " + requestTarget + " HTTP/1.1\r\nHost: " + target.Authority + "\r\nContent-Length: " + strconv.Itoa(length) + "\r\n"
+    var output = method + " " + requestTarget + " HTTP/1.1\r\nHost: " + target.Authority + "\r\n"
+    if length < 0 {
+        output += "Transfer-Encoding: chunked\r\n"
+    } else {
+        output += "Content-Length: " + strconv.Itoa(length) + "\r\n"
+    }
     if closing {
         output += "Connection: close\r\n"
     }

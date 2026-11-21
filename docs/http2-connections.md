@@ -137,3 +137,11 @@ after `Close`.
   you have read plus a window (`StreamWindow`), so an answer you read slowly
   waits at the server instead of filling memory, and other requests on the
   connection keep going. Closing a stream early tells the server to stop.
+
+## Reader uploads
+
+`conn.Upload` sends an owned `http.RequestBody` from either `NewRequestBody`
+or `NewUnknownLengthBody`. One 32 KiB input slot separates caller-side reads
+from the engine; DATA obeys stream and connection windows. Reader errors and
+cancellation reset that stream, while other requests keep using the connection.
+For limits, deadlines and HTTPS routing, see the [upload guide](http-uploads.md).

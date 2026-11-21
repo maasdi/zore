@@ -767,3 +767,207 @@ fn http2_connection_multiplexes_requests_over_a_scripted_peer() {
     }
     assert_eq!(cases, 24);
 }
+
+#[test]
+fn http2_upload_streams_bounded_input_and_keeps_siblings_usable() {
+    let prefix = PROGRAM.split("func script(").next().unwrap();
+    let source = format!(
+        "{prefix}{}",
+        r#"
+type Source struct { at int; size int; mode string; dropped channel<int>; entered channel<bool>; resume channel<bool> }
+func (s mut Source) drop() { s.dropped.send(s.at) }
+func (s mut Source) Read(buf mut []byte) (int, error) {
+    if s.mode == "blockedside" && s.at == 0 { s.entered.send(true) }
+    if s.mode == "blockedsource" && s.at == 0 { s.entered.send(true); s.resume.receive() }
+    if s.mode == "stall" { return 0, nil }
+    if s.mode == "invalid" { return buf.len() + 1, nil }
+    if s.at == s.size { return 0, io.EOF }
+    if s.mode == "slow" { time.Sleep(200 * time.Millisecond) }
+    var n = buf.len()
+    if n > s.size - s.at { n = s.size - s.at }
+    for var i = 0; i < n; i += 1 { buf[i] = byte((s.at + i) % 251) }
+    s.at += n
+    if s.mode == "error" { return n, error("source failure") }
+    if s.mode == "eofwith" { return n, io.EOF }
+    return n, nil
+}
+func uploadPeer(listener own net.Listener, mode string) error {
+    let raw = listener.Accept()?
+    var settings = Array<byte>{}
+    if mode == "blocked" || mode == "cancel" || mode == "early" || mode == "blockedside" { settings = Array<byte>{0, 4, 0, 0, 0, 0} }
+    var p = Peer{conn: raw, decoder: hpack.NewDecoder(4096, 32768)?, encoder: hpack.NewEncoder(), input: Array<byte>{}, log: Array<string>{}, updates: 0, settings: settings}
+    p.hello()?
+    let id, ended = p.request()?
+    if ended { return error("upload ended in HEADERS") }
+    let head = p.log[p.log.len() - 1]
+    if strings.Contains(head, "transfer-encoding") { return error("H2 chunked framing") }
+    if mode == "known" {
+        if !strings.Contains(head, "content-length=100000") { return error("known length missing") }
+    } else if strings.Contains(head, "content-length") { return error("unknown length present") }
+    if mode == "blockedsource" || mode == "blockedside" {
+        let sibling, _ = p.request()?
+        p.answer(sibling, "200", "unblocked")?
+    }
+    var total = 0
+    var complete = false
+    if mode == "early" { p.answer(id, "411", "")? }
+    for mode != "early" {
+        let kind, flags, stream, data = p.frame()?
+        if kind == 4 || kind == 8 { continue }
+        if stream != id { return error("wrong upload stream") }
+        if kind == 3 { break }
+        if kind != 0 || data.len() > 16384 { return error("invalid upload frame") }
+        for i, value in data {
+            if value != byte((total + i) % 251) { return error("corrupt upload data") }
+        }
+        total += data.len()
+        if data.len() > 0 {
+            p.send(8, 0, 0, number(data.len())[:])?
+            p.send(8, 0, id, number(data.len())[:])?
+        }
+        if flags & 1 != 0 { complete = true; break }
+    }
+    if complete { p.answer(id, "200", strconv.Itoa(total))? }
+    if mode == "blocked" || mode == "cancel" || mode == "blockedside" { if total != 0 { return error("DATA escaped zero window") } }
+    if mode == "error" && total != 3 { return error("source error lost bytes") }
+    if mode == "limit" && total != 0 { return error("over-limit read transmitted") }
+    if mode == "clientlimit" && total != 98304 { return error("client limit violated") }
+    let sibling, _ = p.request()?
+    p.answer(sibling, "200", "sibling")?
+    return p.goodbye()
+}
+func peak() (int, error) {
+    let status = os.ReadFile("/proc/self/status")?
+    for line in strings.Split(strings.FromBytes(status[:])?, "\n") {
+        if strings.HasPrefix(line, "VmHWM:") {
+            let digits = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "VmHWM:"), "kB"))
+            return strconv.Atoi(digits)
+        }
+    }
+    return 0, error("no VmHWM")
+}
+async func transfer(conn http.HTTP2Conn, body own http.RequestBody, settings http.UploadConfig) (http.ClientResponse, error) {
+    return conn.Upload(context.Background(), "PUT", "https://example.test/upload", http.NewHeader(), body, settings)
+}
+func invoke(conn http.HTTP2Conn, body own http.RequestBody, settings http.UploadConfig, mode string) (http.ClientResponse, error) {
+    if mode == "plain" || mode == "known" { return conn.Upload(context.Background(), "PUT", "https://example.test/upload", http.NewHeader(), body, settings) }
+    let task = go transfer(conn, body, settings)
+    return task.wait()
+}
+async func unblock(conn http.HTTP2Conn, mode string, entered channel<bool>, resume channel<bool>, checked channel<error>) {
+    if mode != "blockedsource" && mode != "blockedside" { checked.send(nil); return }
+    entered.receive()
+    let empty = Array<byte>{}
+    let _, err = conn.Do(context.Background(), "GET", "https://example.test/unblock", http.NewHeader(), empty[:])
+    resume.send(true)
+    checked.send(err)
+}
+func run() error {
+    waitIdle(0)
+    let mode = os.Args()[1]
+    let listener = net.Listen("tcp4", "127.0.0.1:0")?
+    let address = listener.Addr()
+    let server = go uploadPeer(listener, mode)
+    var config = http.DefaultClientConfig()
+    config.Timeout = 2 * time.Second
+    config.MaxRequestBodyBytes = 100000
+    if mode == "big" { config.MaxRequestBodyBytes = 67108864 }
+    if mode == "known" { config.MaxRequestBodyBytes = 10 }
+    let client = http.NewClient(config)?
+    let conn = client.NewHTTP2Conn(Plain{conn: net.Dial("tcp", address)?}, http.DefaultHTTP2Config())?
+    let dropped = channel<int>(1)
+    let entered = channel<bool>(1)
+    let resume = channel<bool>(1)
+    let checked = channel<error>(1)
+    go unblock(conn, mode, entered, resume, checked)
+    var size = 100000
+    if mode == "big" { size = 67108864 }
+    if mode == "clientlimit" { size = 100001 }
+    if mode == "error" || mode == "slow" { size = 3 }
+    if mode == "empty" { size = 0 }
+    var bodies = Array<http.RequestBody>{}
+    if mode == "known" { bodies.push(http.NewRequestBody(Source{at: 0, size: size, mode: mode, dropped: dropped, entered: entered, resume: resume}, size)?) } else {
+        bodies.push(http.NewUnknownLengthBody(Source{at: 0, size: size, mode: mode, dropped: dropped, entered: entered, resume: resume}))
+    }
+    let _, body = bodies.pop()
+    var settings = http.DefaultUploadConfig()
+    settings.IdleTimeout = 100 * time.Millisecond
+    if mode == "blockedside" { settings.IdleTimeout = 300 * time.Millisecond }
+    if mode == "cancel" { settings.Timeout = 100 * time.Millisecond; settings.IdleTimeout = time.Second }
+    if mode == "limit" { settings.MaxBodyBytes = 10 }
+    let response, err = invoke(conn, body, settings, mode)
+    _ = err
+    let consumed, _ = dropped.receive()
+    if mode == "early" {
+        if response.StatusCode != 411 || err != nil { return error("early response missing") }
+        if consumed > 65536 { return error("early response consumed entire source") }
+    } else {
+        println("consumed " + strconv.Itoa(consumed))
+        println(strconv.Itoa(response.StatusCode) + " " + message(err))
+        if err == nil { println(strings.FromBytes(response.Body[:])?) }
+    }
+    let empty = Array<byte>{}
+    let sibling = conn.Do(context.Background(), "GET", "https://example.test/sibling", http.NewHeader(), empty[:])?
+    if strings.FromBytes(sibling.Body[:])? != "sibling" { return error("sibling failed") }
+    if mode == "big" { println(peak()? < 32768) }
+    let unblockErr, _ = checked.receive()
+    if unblockErr != nil { return unblockErr }
+    conn.Close()
+    server.wait()?
+    println("ok")
+    return nil
+}
+func main() { let err = run(); if err != nil { println("failed " + message(err)) } }
+"#
+    );
+    let dir = TempDir::new().unwrap();
+    let executable = dir.executable("h2_upload");
+    controlled_runtime::build_with_workers(&source, &executable, 1);
+    for (mode, expected) in [
+        ("normal", "consumed 100000\n200 nil\n100000\nok\n"),
+        ("plain", "consumed 100000\n200 nil\n100000\nok\n"),
+        ("blockedsource", "consumed 100000\n200 nil\n100000\nok\n"),
+        ("known", "consumed 100000\n200 nil\n100000\nok\n"),
+        ("empty", "consumed 0\n200 nil\n0\nok\n"),
+        ("eofwith", "consumed 32768\n200 nil\n32768\nok\n"),
+        ("slow", "consumed 3\n200 nil\n3\nok\n"),
+        ("error", "consumed 3\n0 source failure\nok\n"),
+        (
+            "invalid",
+            "consumed 0\n0 http.Client: invalid read count\nok\n",
+        ),
+        (
+            "stall",
+            "consumed 0\n0 http.Client: request body made no progress\nok\n",
+        ),
+        (
+            "limit",
+            "consumed 11\n0 http.Client: request body too large\nok\n",
+        ),
+        (
+            "blocked",
+            "consumed 32768\n0 http.Client: upload idle timeout\nok\n",
+        ),
+        (
+            "cancel",
+            "consumed 32768\n0 context deadline exceeded\nok\n",
+        ),
+        (
+            "clientlimit",
+            "consumed 100001\n0 http.Client: request body too large\nok\n",
+        ),
+        (
+            "blockedside",
+            "consumed 32768\n0 http.Client: upload idle timeout\nok\n",
+        ),
+        ("early", "ok\n"),
+    ] {
+        assert_eq!(run(&executable, mode), expected, "{mode}");
+    }
+    if cfg!(target_os = "linux") {
+        assert_eq!(
+            run(&executable, "big"),
+            "consumed 67108864\n200 nil\n67108864\ntrue\nok\n"
+        );
+    }
+}

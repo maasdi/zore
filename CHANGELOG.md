@@ -124,6 +124,14 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   fails with `http.Pool: reused connection closed` and is never sent again.
   `Close` shuts the pool down without cutting off calls already running.
 
+### Unknown-length HTTP uploads
+
+- Added `http.NewUnknownLengthBody` and running request-size limits with bounded
+  HTTP/1.1 chunked framing. Negative lengths remain invalid in `NewRequestBody`.
+- Added `HTTP2Conn.Upload` with a bounded input slot, flow control, stream-local
+  cancellation and source errors, plus verified ALPN routing through
+  `tls/https.AutoClient.Upload`. Reader bodies are never automatically replayed.
+
 ### Streamed HTTP uploads
 
 - `Client.Upload` and `Client.UploadExchange` send an owned `http.RequestBody`,

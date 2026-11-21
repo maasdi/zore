@@ -52,6 +52,13 @@ function handle(req, res) {
       res.setHeader('content-encoding', 'gzip');
       res.setHeader('x-sum', String(sum));
       res.end(zlib.gzipSync(data));
+    } else if (url.pathname === '/upload') {
+      const data = Buffer.concat(chunks);
+      const valid = data.every((value, i) => value === i % 251);
+      const framing = req.headers['content-length'] === undefined &&
+        (req.httpVersion === '2.0' ? req.headers['transfer-encoding'] === undefined : req.headers['transfer-encoding'] === 'chunked');
+      if (!valid || !framing) res.statusCode = 400;
+      reply(`${req.httpVersion} ${size} ${valid && framing}`);
     } else if (url.pathname === '/echo') {
       reply(`${req.httpVersion} ${req.method} ${size}`);
     } else if (url.pathname === '/header') {

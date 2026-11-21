@@ -217,6 +217,17 @@ frontend API and rejections, and the `TestHTTPSPool` cases in
 [examples/https-client/https_test.ore](../../examples/https-client/https_test.ore)
 reuse one verified HTTPS connection and reject a wrong host.
 
+## Unknown-length HTTP uploads — issue #307
+
+Locked §37.53 adds `http.NewUnknownLengthBody`, `HTTP2Conn.Upload` and verified
+`tls/https.AutoClient.Upload` routing. The upload tests cover chunk framing,
+EOF with bytes, exact/running limits, no-progress and reader failures, 411,
+pre-cancellation, deadlines, bounded memory and one-worker plain/async callers.
+The scripted HTTP/2 peer checks DATA, omitted unknown lengths, flow control,
+source failures, early responses and sibling reuse. The driver interoperability
+fixture checks binary unknown bodies with independent Node HTTP/1.1 and HTTP/2
+servers over verified TLS.
+
 ## Streamed HTTP uploads — issue #287
 
 Locked §37.42 delivers `http.NewRequestBody`, `Client.Upload` and

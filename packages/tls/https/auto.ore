@@ -226,6 +226,36 @@ func (a AutoClient) Open(ctx context.Context, method string, absoluteURL string,
     }
 }
 
+func (a AutoClient) Upload(ctx context.Context, method string, absoluteURL string, headers http.Header, body own http.RequestBody, config http.UploadConfig) (http.ClientResponse, error) {
+    if config.Timeout > 0 {
+        let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(config.Timeout))
+        let guard = autoCancel{cancel: cancel}
+        return a.upload(bounded, method, absoluteURL, headers, body, config)
+    }
+    return a.upload(ctx, method, absoluteURL, headers, body, config)
+}
+
+func (a AutoClient) upload(ctx context.Context, method string, absoluteURL string, headers http.Header, body own http.RequestBody, config http.UploadConfig) (http.ClientResponse, error) {
+    let empty = Array<byte>{}
+    let target = a.admit(absoluteURL, empty[:])?
+    let client = http.NewClient(a.config)?
+    if target.Scheme != "https" {
+        return client.Upload(ctx, method, absoluteURL, headers, body, config)
+    }
+    let bounded, cancel = context.WithDeadline(ctx, time.Now().Add(a.config.Timeout))
+    let guard = autoCancel{cancel: cancel}
+    var route = a.route(bounded, target)?
+    if route.direct.len() > 0 {
+        let _, source = route.direct.pop()
+        return client.UploadExchange(ctx, conn{source: source}, method, absoluteURL, headers, body, config)
+    }
+    let response, err = route.shared[0].Upload(ctx, method, absoluteURL, headers, body, config)
+    if route.oneOff {
+        route.shared[0].Close()
+    }
+    return response, err
+}
+
 func (a AutoClient) OpenDecoded(ctx context.Context, method string, absoluteURL string, headers http.Header, body []byte, stream http.StreamConfig, config http.DecodeConfig) (http.ResponseStream, error) {
     let request = http.DecodeHeaders(headers, config)?
     let opened = a.Open(ctx, method, absoluteURL, request, body, stream)?

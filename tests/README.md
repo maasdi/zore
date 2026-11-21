@@ -14,7 +14,9 @@ Miri uses smaller spans and fixture counts; native tests keep 256 KiB spans.
 Streamed HTTP responses are checked in `codegen/http_stream.rs` (real loopback
 peers, scripted connections, one-worker progress, bounded memory and the
 download guide), streamed uploads in `codegen/http_upload.rs` (failing sources,
-limits, timeouts, bounded memory and the upload guide), connection pooling in
+limits, timeouts, bounded memory, unknown-length chunks and the upload guide),
+HTTP/2 uploads in `codegen/http2.rs` (source failures, flow control, early
+responses and sibling reuse), connection pooling in
 `codegen/http_pool.rs` (reuse rules, limits, waiters, expiry, stale connections,
 shutdown and the pooling guide), redirects in `codegen/http_redirect.rs`
 (scripted chains, rewriting, credential removal, limits and the redirect guide),

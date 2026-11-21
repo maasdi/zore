@@ -42,7 +42,9 @@ Issue [#287](https://github.com/maasdi/zore/issues/287) adds streamed HTTP
 client uploads under §37.42: `Client.Upload` sends an owned `RequestBody` (a
 reader plus its exact length) piece by piece with bounded memory, its own size
 limit, idle and total timeouts, exact byte accounting and cleanup on every
-path. See the [upload guide](http-uploads.md).
+path. Unknown-length readers now use bounded HTTP/1.1 chunks or flow-controlled
+HTTP/2 DATA under §37.53, including verified `AutoClient.Upload` routing.
+See the [upload guide](http-uploads.md).
 
 Issue [#286](https://github.com/maasdi/zore/issues/286) adds streamed HTTP
 client responses under §37.41: `Client.Open` returns an owned `ResponseStream`
