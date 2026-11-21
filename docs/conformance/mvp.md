@@ -393,3 +393,19 @@ frontend API checks, native ownership/cleanup and controlled one-worker cases,
 runtime pending/datagram/deadline assertions, and independent Python IP/URI/UDP
 oracle. DNS cancellation cannot forcibly abort OS resolver calls; raw/reverse DNS,
 connected/multicast UDP, zones and additional protocols remain excluded.
+
+
+### Verified HTTPS proxies and environment selection
+
+Locked §37.55 is exercised by `tests/codegen/proxy_environment.rs` (canonical
+IPPrefix masking, family distinction, invalid values, environment precedence,
+credential decoding, CGI and all bypass forms), `tests/codegen/http_proxy.rs`
+(pre-dial metadata limits, legacy behavior and one-worker owned transport/pool
+leases), and `tests/packages/networking.rs` (public APIs, ownership and private
+storage rejections). `tests/driver/http_client.rs` runs an independent Node TLS
+proxy and target for separate hostname verification, nested TLS, absolute-form
+HTTP, credentials confined to the proxy, pooled reuse, streamed uploads,
+async calls, system roots, refusal and deadlines. `packages/tls/stream_test.ore`
+covers malformed counts, bytes with errors, truncated records, source poll
+timeouts and deterministic stream drops. Existing tagged TLS consumers remain
+part of the release gates.

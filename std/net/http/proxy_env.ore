@@ -1,0 +1,285 @@
+package http
+
+import "std/encoding/base64"
+import "std/net"
+import "std/net/url"
+import "std/os"
+import "std/strconv"
+import "std/strings"
+
+const proxyEnvironmentBytes = 4096
+const proxyEnvironmentEntries = 256
+
+type noProxyRule struct {
+    host string
+    port int
+    any bool
+    subdomains bool
+    addresses Array<net.IP>
+    prefixes Array<net.IPPrefix>
+}
+
+func emptyProxyConfig() ProxyConfig {
+    return ProxyConfig{URL: "", Authorization: ""}
+}
+
+func emptyNoProxyRule() noProxyRule {
+    return noProxyRule{host: "", port: 0, any: false, subdomains: false, addresses: Array<net.IP>{}, prefixes: Array<net.IPPrefix>{}}
+}
+
+func proxyVariableError(name string) error {
+    return error("http.ProxyFromEnvironment: invalid " + name)
+}
+
+func proxyEnvironmentValue(environment []string, name string) (string, bool) {
+    for entry in environment {
+        let key, value, _ = strings.Cut(entry, "=")
+        if key == name {
+            return value, true
+        }
+    }
+    return "", false
+}
+
+func proxyVariable(environment []string, upper string, lower string) (string, string) {
+    let value, present = proxyEnvironmentValue(environment, upper)
+    if present {
+        return value, upper
+    }
+    let fallback, _ = proxyEnvironmentValue(environment, lower)
+    return fallback, lower
+}
+
+func proxyCredential(text string, username bool) (string, error) {
+    for var i = 0; i < text.len(); i += 1 {
+        let c = text[i]
+        if c <= 32 || c >= 127 || c == 92 || c == 64 || c == 91 || c == 93 {
+            return "", error("invalid credentials")
+        }
+    }
+    let decoded = url.PathUnescape(text)?
+    for var i = 0; i < decoded.len(); i += 1 {
+        let c = decoded[i]
+        if c < 32 || c == 127 || username && c == 58 {
+            return "", error("invalid credentials")
+        }
+    }
+    return decoded, nil
+}
+
+func environmentProxy(value string, name string) (ProxyConfig, error) {
+    if value == "" {
+        return emptyProxyConfig(), nil
+    }
+    if value.len() > proxyEnvironmentBytes {
+        return emptyProxyConfig(), proxyVariableError(name)
+    }
+    let text, _, _ = strings.Cut(value, "#")
+    let scheme, rest, found = strings.Cut(text, "://")
+    if !found {
+        return emptyProxyConfig(), proxyVariableError(name)
+    }
+    var end = rest.len()
+    for var i = 0; i < rest.len(); i += 1 {
+        if rest[i] == 47 || rest[i] == 63 {
+            end = i;
+            break
+        }
+    }
+    let authority = rest[:end]
+    let at = strings.LastIndex(authority, "@")
+    var cleaned = text
+    var authorization = ""
+    if at >= 0 {
+        let rawUser, rawPassword, _ = strings.Cut(authority[:at], ":")
+        let user, userErr = proxyCredential(rawUser, true)
+        let password, passwordErr = proxyCredential(rawPassword, false)
+        _ = userErr
+        _ = passwordErr
+        if userErr != nil || passwordErr != nil {
+            return emptyProxyConfig(), proxyVariableError(name)
+        }
+        let plain = strings.Bytes(user + ":" + password)
+        authorization = "Basic " + base64.Standard.EncodeToString(plain[:])
+        cleaned = scheme + "://" + authority[at + 1:] + rest[end:]
+    }
+    let target, err = url.ParseAbsolute(cleaned)
+    if err != nil || target.RequestTarget != "/" {
+        return emptyProxyConfig(), proxyVariableError(name)
+    }
+    return ProxyConfig{URL: target.Scheme + "://" + target.Authority, Authorization: authorization}, nil
+}
+
+func noProxyPort(text string) (int, error) {
+    if text == "" {
+        return 0, error("invalid port")
+    }
+    for var i = 0; i < text.len(); i += 1 {
+        if text[i] < 48 || text[i] > 57 {
+            return 0, error("invalid port")
+        }
+    }
+    let value = strconv.Atoi(text)?
+    if value < 1 || value > 65535 {
+        return 0, error("invalid port")
+    }
+    return value, nil
+}
+
+func parseNoProxy(entry string, name string) (noProxyRule, error) {
+    var rule = emptyNoProxyRule()
+    var host = entry
+    var port = ""
+    var hasPort = false
+    var bracketed = false
+    if strings.HasPrefix(entry, "[") {
+        let end = strings.Index(entry, "]")
+        if end < 0 {
+            return rule, proxyVariableError(name)
+        }
+        host = entry[1:end]
+        bracketed = true
+        let tail = entry[end + 1:]
+        if tail != "" {
+            if !strings.HasPrefix(tail, ":") {
+                return rule, proxyVariableError(name)
+            }
+            hasPort = true
+            port = tail[1:]
+        }
+    } else {
+        let _, literalErr = net.ParseIP(entry)
+        if literalErr != nil {
+            let slash = strings.Index(entry, "/")
+            let colon = strings.LastIndex(entry, ":")
+            if colon >= 0 && (slash < 0 || colon > slash) {
+                if slash < 0 && strings.Index(entry, ":") != colon {
+                    return rule, proxyVariableError(name)
+                }
+                host = entry[:colon]
+                hasPort = true
+                port = entry[colon + 1:]
+            }
+        }
+    }
+    if hasPort {
+        let value, portErr = noProxyPort(port)
+        if portErr != nil {
+            return rule, proxyVariableError(name)
+        }
+        rule.port = value
+    }
+    if host == "*" && !bracketed {
+        rule.any = true;
+        return rule, nil
+    }
+    if strings.Contains(host, "/") {
+        let prefix, err = net.ParseIPPrefix(host)
+        if err != nil {
+            return rule, proxyVariableError(name)
+        }
+        rule.prefixes.push(prefix)
+        return rule, nil
+    }
+    let address, addressErr = net.ParseIP(host)
+    if addressErr == nil {
+        if bracketed && !address.Is6() {
+            return rule, proxyVariableError(name)
+        }
+        rule.addresses.push(address)
+        return rule, nil
+    }
+    if bracketed {
+        return rule, proxyVariableError(name)
+    }
+    host = strings.TrimSuffix(strings.ToLower(host), ".")
+    if strings.HasPrefix(host, "*.") {
+        rule.subdomains = true;
+        host = host[2:]
+    } else if strings.HasPrefix(host, ".") {
+        rule.subdomains = true;
+        host = host[1:]
+    }
+    let candidate, hostErr = url.ParseAbsolute("http://" + host + "/")
+    if hostErr != nil || candidate.Hostname != host || strings.Contains(host, "*") {
+        return rule, proxyVariableError(name)
+    }
+    let _, numericErr = net.ParseIP(host)
+    if numericErr == nil {
+        return rule, proxyVariableError(name)
+    }
+    rule.host = host
+    return rule, nil
+}
+
+func environmentBypasses(value string, name string) (Array<noProxyRule>, error) {
+    var rules = Array<noProxyRule>{}
+    if value.len() > proxyEnvironmentBytes {
+        return rules, proxyVariableError(name)
+    }
+    for field in strings.Split(value, ",") {
+        let entry = strings.Trim(field, " \t")
+        if entry == "" {
+            continue
+        }
+        if rules.len() >= proxyEnvironmentEntries {
+            return rules, proxyVariableError(name)
+        }
+        rules.push(parseNoProxy(entry, name)?)
+    }
+    return rules, nil
+}
+
+func (r noProxyRule) matches(host string, port int, addresses []net.IP) bool {
+    if r.port != 0 && r.port != port {
+        return false
+    }
+    if r.any {
+        return true
+    }
+    if r.addresses.len() != 0 {
+        return addresses.len() != 0 && r.addresses[0].Equal(addresses[0])
+    }
+    if r.prefixes.len() != 0 {
+        return addresses.len() != 0 && r.prefixes[0].Contains(addresses[0])
+    }
+    if addresses.len() != 0 {
+        return false
+    }
+    if !r.subdomains && r.host == host {
+        return true
+    }
+    return strings.HasSuffix(host, "." + r.host)
+}
+
+func ProxyFromEnvironment(absoluteURL string) (ProxyConfig, bool, error) {
+    let target = url.ParseAbsolute(absoluteURL)?
+    let environment = os.Environ()
+    let httpValue, httpName = proxyVariable(environment[:], "HTTP_PROXY", "http_proxy")
+    let httpsValue, httpsName = proxyVariable(environment[:], "HTTPS_PROXY", "https_proxy")
+    let bypassValue, bypassName = proxyVariable(environment[:], "NO_PROXY", "no_proxy")
+    let httpProxy = environmentProxy(httpValue, httpName)?
+    let httpsProxy = environmentProxy(httpsValue, httpsName)?
+    let bypasses = environmentBypasses(bypassValue, bypassName)?
+    var addresses = Array<net.IP>{}
+    let address, addressErr = net.ParseIP(target.Hostname)
+    if addressErr == nil {
+        addresses.push(address)
+    }
+    let host = strings.TrimSuffix(strings.ToLower(target.Hostname), ".")
+    let colon = strings.LastIndex(target.Address, ":")
+    let port, _ = strconv.Atoi(target.Address[colon + 1:])
+    for rule in bypasses {
+        if rule.matches(host, port, addresses[:]) {
+            return emptyProxyConfig(), false, nil
+        }
+    }
+    if target.Scheme == "https" {
+        return httpsProxy, httpsProxy.URL != "", nil
+    }
+    let method, _ = proxyEnvironmentValue(environment[:], "REQUEST_METHOD")
+    if method != "" && httpName == "HTTP_PROXY" && httpProxy.URL != "" {
+        return emptyProxyConfig(), false, error("http.ProxyFromEnvironment: HTTP_PROXY refused in CGI")
+    }
+    return httpProxy, httpProxy.URL != "", nil
+}

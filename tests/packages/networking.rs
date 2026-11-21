@@ -607,3 +607,71 @@ fn replay_uploads_reject_missing_factories_and_factory_reuse() {
         super::rejects(&[("main.ore", &source)], expected);
     }
 }
+
+#[test]
+fn proxy_streams_and_prefixes_check_without_native_linking() {
+    super::accepts(&[(
+        "main.ore",
+        r#"package main
+import "std/context"
+import "std/net"
+import "std/net/http"
+import "std/net/url"
+import "std/time"
+type Wire struct { conn net.Conn }
+func (w mut Wire) Read(buf mut []byte) (int, error) { return w.conn.Read(buf) }
+func (w mut Wire) Write(data []byte) (int, error) { return w.conn.Write(data) }
+func (w mut Wire) SetReadDeadline(t time.Instant) error { return w.conn.SetReadDeadline(t) }
+func (w mut Wire) SetWriteDeadline(t time.Instant) error { return w.conn.SetWriteDeadline(t) }
+func (w mut Wire) ClearDeadline() error { return w.conn.ClearDeadline() }
+type Transport struct {}
+func (t Transport) WrapProxy(ctx context.Context, conn own net.Conn, proxy url.AbsoluteURL) (http.ProxyConn, error) { return Wire{conn: conn}, nil }
+func (t Transport) Tunnel(ctx context.Context, conn own http.ProxyConn, target url.AbsoluteURL) (http.ClientConn, error) { return conn, nil }
+async func configured(target string) error {
+    let proxy, enabled = http.ProxyFromEnvironment(target)?
+    if enabled { let client = http.NewProxyClientWithTransport(http.DefaultClientConfig(), proxy, Transport{})? }
+    let prefix = net.ParseIPPrefix("2001:db8::/32")?
+    println(prefix.IsValid()); println(prefix.Addr().String()); println(prefix.Bits()); println(prefix.Contains(net.ParseIP("2001:db8::1")?)); println(prefix.String())
+    return nil
+}
+func main() {}
+"#,
+    )]);
+}
+
+#[test]
+fn proxy_streams_reject_missing_deadlines_and_owned_reuse() {
+    for (body, expected) in [
+        ("let _ = net.ParseIPPrefix(8)", "mismatched types"),
+        (
+            "let p = net.ParseIPPrefix(\"::/0\")?; println(p.network)",
+            "not exported",
+        ),
+        (
+            "let p = net.ParseIPPrefix(\"::/0\")?; println(p.bits)",
+            "not exported",
+        ),
+        ("let _ = http.ProxyFromEnvironment(4)", "mismatched types"),
+        (
+            "let c = http.NewProxyClientWithTransport(http.DefaultClientConfig(), proxy, transport)?; let _ = transport",
+            "moved",
+        ),
+    ] {
+        let source = format!(
+            "package main\nimport \"std/net\"\nimport \"std/net/http\"\nfunc run(proxy http.ProxyConfig, transport own http.ClientProxyTransport) error {{ let _ = net.ParseIP; {body}; return nil }}\nfunc main() {{}}\n"
+        );
+        super::rejects(&[("main.ore", &source)], expected);
+    }
+    super::rejects(
+        &[(
+            "main.ore",
+            r#"package main
+import "std/net/http"
+type Missing struct {}
+func invalid(value own Missing) http.ProxyConn { return value }
+func main() {}
+"#,
+        )],
+        "does not satisfy",
+    );
+}

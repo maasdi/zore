@@ -26,6 +26,7 @@ type Client struct {
     transport Array<ClientTransport>
     proxy clientProxy
     tunnel Array<ClientTunnel>
+    proxyTransport Array<ClientProxyTransport>
 }
 
 type ClientResponse struct {
@@ -91,7 +92,7 @@ type clientStream struct {
 }
 
 func emptyClient() Client {
-    return Client{config: DefaultClientConfig(), live: false, transport: Array<ClientTransport>{}, proxy: noProxy(), tunnel: Array<ClientTunnel>{}}
+    return Client{config: DefaultClientConfig(), live: false, transport: Array<ClientTransport>{}, proxy: noProxy(), tunnel: Array<ClientTunnel>{}, proxyTransport: Array<ClientProxyTransport>{}}
 }
 
 func emptyClientURL() url.AbsoluteURL {
@@ -135,7 +136,7 @@ func NewClient(config ClientConfig) (Client, error) {
     if chosen.PollInterval == 0 {
         chosen.PollInterval = defaults.PollInterval
     }
-    return Client{config: chosen, live: true, transport: Array<ClientTransport>{}, proxy: noProxy(), tunnel: Array<ClientTunnel>{}}, nil
+    return Client{config: chosen, live: true, transport: Array<ClientTransport>{}, proxy: noProxy(), tunnel: Array<ClientTunnel>{}, proxyTransport: Array<ClientProxyTransport>{}}, nil
 }
 
 func (c Client) Config() ClientConfig {
@@ -198,6 +199,12 @@ func (c Client) prepareRequest(method string, absoluteURL string, headers Header
     if length > limit {
         return "", emptyClientURL(), error("http.Client: request body too large")
     }
+    if viaProxy && target.Scheme == "https" {
+        let _, proxyErr = c.proxyRequest(target)
+        if proxyErr != nil {
+            return "", emptyClientURL(), proxyErr
+        }
+    }
     var requestTarget = target.RequestTarget
     if viaProxy && target.Scheme == "http" {
         requestTarget = "http://" + target.Authority + target.RequestTarget
@@ -212,6 +219,9 @@ func (c Client) prepareRequest(method string, absoluteURL string, headers Header
         output += "Connection: close\r\n"
     }
     if viaProxy && target.Scheme == "http" && c.proxy.authorization != "" {
+        if c.proxy.authorization.len() > c.config.MaxHeaderBytes - output.len() - 23 {
+            return "", emptyClientURL(), error("http.Client: metadata too large")
+        }
         output += "Proxy-Authorization: " + c.proxy.authorization + "\r\n"
     }
     if output.len() > c.config.MaxHeaderBytes {
@@ -307,7 +317,7 @@ func (c Client) dialAndExchange(ctx context.Context, output string, target url.A
 }
 
 func (c Client) verifies() bool {
-    return c.transport.len() != 0 || c.tunnel.len() != 0
+    return c.transport.len() != 0 || c.tunnel.len() != 0 || c.proxyTransport.len() != 0
 }
 
 func (c Client) dial(ctx context.Context, target url.AbsoluteURL) (ClientConn, error) {

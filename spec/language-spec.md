@@ -13976,6 +13976,165 @@ The factory owns each opened file through its returned body. Reopening a path
 can observe changed contents; callers that require identical bytes must keep
 the underlying data stable across attempts.
 
+## 37.55 Verified HTTPS proxies and explicit environment selection — LOCKED
+
+Issue #310 extends explicit HTTP/1.1 proxy clients to proxies reached over TLS.
+The existing ProxyConfig, ClientTunnel and constructors remain available with
+unchanged signatures. Ordinary clients never read proxy environment variables.
+
+```ore
+type ProxyConn interface {
+    mut Read(buf mut []byte) (int, error)
+    mut Write(data []byte) (int, error)
+    mut SetReadDeadline(t time.Instant) error
+    mut SetWriteDeadline(t time.Instant) error
+    mut ClearDeadline() error
+}
+type ClientProxyTransport interface {
+    WrapProxy(ctx context.Context, source own net.Conn,
+              proxy url.AbsoluteURL) (ProxyConn, error)
+    Tunnel(ctx context.Context, source own ProxyConn,
+           target url.AbsoluteURL) (ClientConn, error)
+}
+func NewProxyClientWithTransport(config ClientConfig, proxy ProxyConfig,
+                                 transport own ClientProxyTransport) (Client, error)
+func ProxyFromEnvironment(absoluteURL string) (ProxyConfig, bool, error)
+```
+
+ProxyConn is an owned, deadline-capable proxy stream, with the same read/write
+count rules and net.Read/net.Write timeout errors as net.Conn. ClearDeadline
+removes both directions' bounds. A transport must verify the proxy certificate
+and URL hostname in WrapProxy, and the target certificate and URL hostname in
+Tunnel. A custom implementation owns those guarantees, as for ClientTransport.
+
+ProxyConfig.URL may use http or https with the root request target; the existing
+ParseAbsolute rules, including ignored fragments, apply. User information stays
+unsupported in an explicit ProxyConfig.URL. A plain constructor or the legacy
+net.Conn ClientTunnel constructor rejects an https proxy with
+`http.Client: HTTPS proxy requires verified TLS transport` before I/O.
+NewProxyClientWithTransport supports both proxy schemes. The core dials the
+proxy with ClientConfig.DialTimeout and its setup context. It invokes WrapProxy
+only for an https proxy. For an http target it sends absolute-form requests over
+that stream; for an https target it sends CONNECT then invokes Tunnel over the
+owned proxy stream. HTTP/1.1, pool, upload, retry and response rules otherwise
+remain unchanged. CONNECT request and response metadata obey MaxHeaderBytes;
+over-limit request metadata fails before dialing. Proxy credentials occur only
+in proxy requests or CONNECT, never inside the target's TLS connection.
+
+The maintained tls package adds an owned transport primitive:
+
+```ore
+type Stream interface {
+    mut Read(buf mut []byte) (int, error)
+    mut Write(data []byte) (int, error)
+    mut SetReadDeadline(t time.Instant) error
+    mut SetWriteDeadline(t time.Instant) error
+    mut ClearDeadline() error
+}
+func ClientStream(ctx context.Context, source own Stream, serverName string,
+                  config ClientConfig) (Conn, error)
+func ServerStream(ctx context.Context, source own Stream,
+                  config ServerConfig) (Conn, error)
+```
+
+Existing tls.Client/Server(net.Conn) signatures keep working. Conn owns its
+stream and closes it through deterministic drop. Streams must honor deadlines,
+clear them, and report valid counts. net read/write timeouts and tls: timed out
+are recoverable source poll results; malformed counts fail without indexing
+outside the supplied slice. Bytes returned with a source error are fed before
+that error is reported when further input is needed; no second source read
+hides an already-observed failure. TLS close-notify is still required for clean
+EOF. This uses the existing memory-BIO provider; native crypto is unchanged.
+
+`tls/https.NewProxyClient(rootsPEM, config, proxy)` handles either proxy scheme,
+verifying proxy and target independently against the supplied roots. New
+`NewDefaultProxyClient(config, proxy)` uses the existing system-root policy.
+The generic transport enables verified TLS inside verified proxy TLS. It does
+not introduce certificate, hostname or insecure-verification bypasses.
+
+**Environment.** ProxyFromEnvironment selects for the supplied absolute http or
+https target URL, returning (empty ProxyConfig, false, nil) for a bypass or
+unconfigured scheme. It snapshots the effective configuration on each call;
+there is no global cache, DNS lookup, automatic client setting or environment
+read outside this explicitly called helper. Call it again for a different URL
+or changed environment, then construct the desired client from its result.
+
+For HTTP_PROXY/http_proxy, HTTPS_PROXY/https_proxy and NO_PROXY/no_proxy, the
+uppercase variable wins when present, including an empty value. Names are
+matched exactly against one Environ snapshot, preserving spelling on Windows.
+A selected empty proxy value disables that scheme. HTTP and HTTPS targets select their
+respective proxy variable, whose URL may itself be http or https. Each selected
+value is validated, including the unused scheme; overridden variants are
+ignored. Both proxy URLs and NO_PROXY are limited to 4096 bytes, and at most
+256 nonempty NO_PROXY entries. Invalid selected values fail with
+`http.ProxyFromEnvironment: invalid NAME`, naming only the selected variable,
+never its value or credentials. Malformed target URLs retain ParseAbsolute's
+errors. A nonempty REQUEST_METHOD rejects using uppercase HTTP_PROXY for an
+http target with `http.ProxyFromEnvironment: HTTP_PROXY refused in CGI`;
+a NO_PROXY bypass still returns no proxy. Explicit lowercase http_proxy and
+HTTPS_PROXY remain usable under this rule.
+
+Environment proxy URLs are absolute root http/https URLs. Optional user
+information is extracted into ProxyConfig.Authorization as UTF-8 Basic auth,
+with percent decoding through PathUnescape (literal plus remains plus).
+The first literal colon separates username/password; missing password means
+empty. Decoded usernames cannot contain colon and credentials cannot contain
+ASCII control bytes. Invalid escapes/UTF-8 fail. The returned URL contains no
+user information, and no error echoes it. Explicit ProxyConfig.Authorization
+continues to support any valid header value.
+
+NO_PROXY is a comma list with surrounding spaces/tabs ignored and empty items
+ignored. A bare domain matches itself and subdomains, .domain or *.domain only
+subdomains, and * every host. Matching is ASCII case-insensitive and ignores a
+terminal DNS root dot. Exact IPv4/IPv6 and CIDR entries match canonical literal
+addresses without resolving DNS. Optional decimal ports (1..65535) restrict a
+match. IPv6 with a port uses brackets; bracketed CIDRs and a CIDR's /bits:port
+suffix also support ports. Other wildcards, paths, malformed addresses, ports
+or prefixes are errors. All entries are validated before matching.
+
+CIDR primitives belong below HTTP in std/net:
+
+```ore
+type IPPrefix struct { network IP; bits int }
+func ParseIPPrefix(text string) (IPPrefix, error)
+func (p IPPrefix) IsValid() bool
+func (p IPPrefix) Addr() IP
+func (p IPPrefix) Bits() int
+func (p IPPrefix) String() string
+func (p IPPrefix) Contains(ip IP) bool
+```
+
+Parsing requires one slash, ParseIP's literal address rules and a decimal bit
+count from 0 through 32 or 128; host bits are masked to zero. String is canonical
+network/bits. Invalid prefixes have invalid Addr, Bits -1, empty String and
+Contains false. Address families stay distinct, including IPv4-mapped IPv6,
+as in IP.Equal. Lower-level helpers decode only already-validated canonical IP
+text; HTTP does not duplicate IP parsing or masking.
+
+Sources and native sessions drop once on validation, certificate failure,
+CONNECT refusal, cancellation, ordinary error and panic. Plain callers use
+worker compensation; async callers use ordinary APIs without await. Compiler
+impact is bundled net/http sources and maintained TLS sources; no syntax,
+unsafe surface, native networking primitive or crypto provider changes.
+
+```ore
+func configured(target string, roots []byte) (http.Client, error) {
+    let proxy, enabled = http.ProxyFromEnvironment(target)?
+    if enabled { return https.NewProxyClient(roots, http.DefaultClientConfig(), proxy) }
+    return https.NewClient(roots, http.DefaultClientConfig())
+}
+```
+
+Conformance covers verified HTTPS proxies, wrong proxy/target host rejection,
+nested TLS and credential confinement with independent peers; cleartext proxy
+compatibility, pooled/streamed use, cancellation/deadlines, owned generic TLS
+stream counts/error ordering/drop and one-worker plain/async calls. Environment
+cases cover uppercase/lowercase/empty precedence, Basic userinfo, all NO_PROXY
+forms and boundaries, CGI, invalid/oversized values, rereads and default clients
+ignoring proxy variables. IPPrefix vectors include family boundaries, masking,
+invalid inputs, canonical strings and mapped IPv6. Linux/macOS/Windows gates
+and existing versioned TLS consumers must pass.
+
 # 38. Self-Hosting Constraint
 
 ## 38.1 Long-term goal — LOCKED

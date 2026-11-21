@@ -48,6 +48,12 @@ traffic. That needs a TLS transport, so use `https.NewProxyClient` from the
 let client = https.NewProxyClient(roots[:], http.DefaultClientConfig(), proxy)?
 ```
 
+The same TLS constructor accepts `ProxyConfig.URL: "https://proxy.example:443/"`.
+It verifies the proxy's certificate first, then verifies the target independently
+inside the CONNECT tunnel. Use `https.NewDefaultProxyClient(config, proxy)` for
+system roots, or `NewProxyClient(roots, config, proxy)` for explicit roots.
+Neither constructor reads proxy environment variables.
+
 A client from `http.NewProxyClient` has no TLS and refuses `https` addresses with
 `http.Client: HTTPS requires verified TLS transport`. There is never a fallback
 to an unchecked connection.
@@ -62,10 +68,40 @@ never goes inside an HTTPS tunnel to the real server. Setting a
 
 ## Errors
 
-- A proxy address must look like `http://host:port/`; anything else fails with
-  `http.Client: invalid proxy URL`. HTTPS proxies are not supported yet.
+- A proxy address must be a root `http://host:port/` or `https://host:port/`
+  URL. Other forms fail with `http.Client: invalid proxy URL`. An HTTPS proxy
+  needs a verified transport; plain and legacy tunnel constructors return
+  `http.Client: HTTPS proxy requires verified TLS transport` before dialing.
 - A proxy that refuses a tunnel fails with
   `http.Client: proxy refused tunnel with status 407` (or whatever status it
   sent).
 - Connecting to the proxy, the tunnel request and the TLS handshake all count
   towards `ClientConfig.Timeout`.
+
+## Opting into environment settings
+
+Call `http.ProxyFromEnvironment(targetURL)` explicitly. It returns a proxy
+configuration and `true`, or an empty configuration and `false` for a bypass or
+unconfigured scheme. Construct a TLS proxy client when enabled, and an ordinary
+TLS client otherwise. Call the helper for each target; an already-created proxy
+client continues using its explicit configuration.
+
+The helper reads one fresh environment snapshot. `HTTP_PROXY`/`http_proxy` and
+`HTTPS_PROXY`/`https_proxy` select the proxy for each target scheme. Uppercase
+wins when present, including an empty value. Names are matched exactly, including
+the spelling preserved in the Windows environment. A URL's optional percent-
+encoded username/password becomes Basic authorization and is removed from the
+returned URL. Explicit `ProxyConfig.URL` still rejects user information.
+
+`NO_PROXY`/`no_proxy` accepts comma-separated domains, literal IPs, CIDRs and `*`.
+A bare domain matches itself and subdomains; `.example.test` or `*.example.test`
+matches only subdomains. Matching ignores case and a terminal DNS dot. Optional
+ports restrict matches; use brackets for an IPv6 port, such as `[::1]:443`, or
+`[2001:db8::/32]:443` for a prefix. CIDR entries match literal targets without
+DNS lookup; IPv4 and mapped IPv6 stay distinct.
+
+Each selected variable is validated, even for the unused target scheme, with a
+4096-byte limit and at most 256 nonempty bypass entries. Invalid values report
+only the variable's name. In CGI (`REQUEST_METHOD` nonempty), uppercase
+`HTTP_PROXY` is refused for an HTTP target unless bypassed by `NO_PROXY`.
+Lowercase `http_proxy` and `HTTPS_PROXY` remain usable.

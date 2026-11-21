@@ -1,5 +1,12 @@
 # Implementation roadmap
 
+Issue [#310](https://github.com/maasdi/zore/issues/310) extends proxy clients
+with verified HTTPS proxy connections and nested target TLS. Environment proxy
+selection is explicit, validates all selected values, and supports domain,
+literal address, CIDR and port bypasses. `std/net.IPPrefix` owns CIDR primitives;
+the maintained TLS package adds owned deadline-capable streams. See the
+[proxy guide](http-proxies.md) and locked §37.55.
+
 Issue #241 adds physical-page reclamation for fully returned small-string spans,
 keeping one warm span per size class and protecting thread-cached slots.
 Reserved addresses and page-table metadata remain stable. See the

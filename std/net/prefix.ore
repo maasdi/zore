@@ -1,0 +1,170 @@
+package net
+
+import "std/strconv"
+import "std/strings"
+
+type IPPrefix struct {
+    network IP
+    bits int
+}
+
+func invalidPrefix() IPPrefix {
+    return IPPrefix{network: IP{text: ""}, bits: -1}
+}
+
+func canonicalWords(text string) Array<int> {
+    var words = Array<int>{}
+    if text == "" {
+        return words
+    }
+    for part in strings.Split(text, ":") {
+        if strings.Contains(part, ".") {
+            let bytes = strings.Split(part, ".")
+            let a, _ = strconv.Atoi(bytes[0])
+            let b, _ = strconv.Atoi(bytes[1])
+            let c, _ = strconv.Atoi(bytes[2])
+            let d, _ = strconv.Atoi(bytes[3])
+            words.push((a << 8) | b)
+            words.push((c << 8) | d)
+        } else {
+            let value, _ = strconv.ParseInt(part, 16, 32)
+            words.push(value)
+        }
+    }
+    return words
+}
+
+func ipWords(ip IP) Array<int> {
+    var words = Array<int>{}
+    if ip.Is4() {
+        for part in strings.Split(ip.text, ".") {
+            let value, _ = strconv.Atoi(part);
+            words.push(value)
+        }
+        return words
+    }
+    let before, after, compressed = strings.Cut(ip.text, "::")
+    let left = canonicalWords(before)
+    let right = canonicalWords(after)
+    for value in left {
+        words.push(value)
+    }
+    if compressed {
+        for words.len() < 8 - right.len() {
+            words.push(0)
+        }
+    }
+    for value in right {
+        words.push(value)
+    }
+    return words
+}
+
+func ParseIPPrefix(text string) (IPPrefix, error) {
+    let address, count, found = strings.Cut(text, "/")
+    if !found || count == "" {
+        return invalidPrefix(), error("net.ParseIPPrefix: invalid prefix")
+    }
+    var bits = 0
+    for var i = 0; i < count.len(); i += 1 {
+        if count[i] < 48 || count[i] > 57 {
+            return invalidPrefix(), error("net.ParseIPPrefix: invalid prefix")
+        }
+        bits = bits * 10 + int(count[i]) - 48
+        if bits > 128 {
+            return invalidPrefix(), error("net.ParseIPPrefix: invalid prefix")
+        }
+    }
+    let ip, addressErr = ParseIP(address)
+    if addressErr != nil {
+        return invalidPrefix(), error("net.ParseIPPrefix: invalid prefix")
+    }
+    var maximum = 128
+    var width = 16
+    if ip.Is4() {
+        maximum = 32;
+        width = 8
+    }
+    if bits > maximum {
+        return invalidPrefix(), error("net.ParseIPPrefix: invalid prefix")
+    }
+    var words = ipWords(ip)
+    var remaining = bits
+    for var i = 0; i < words.len(); i += 1 {
+        if remaining >= width {
+            remaining -= width
+        } else if remaining > 0 {
+            words[i] = (words[i] >>(width - remaining)) << (width - remaining)
+            remaining = 0
+        } else {
+            words[i] = 0
+        }
+    }
+    var parts = Array<string>{}
+    for value in words {
+        if ip.Is4() {
+            parts.push(strconv.Itoa(value))
+        } else {
+            parts.push(strconv.FormatInt(value, 16))
+        }
+    }
+    var separator = ":"
+    if ip.Is4() {
+        separator = "."
+    }
+    let network, networkErr = ParseIP(strings.Join(parts[:], separator))
+    if networkErr != nil {
+        return invalidPrefix(), error("net.ParseIPPrefix: invalid prefix")
+    }
+    return IPPrefix{network: network, bits: bits}, nil
+}
+
+func (p IPPrefix) IsValid() bool {
+    return p.network.IsValid() && p.bits >= 0
+}
+
+func (p IPPrefix) Addr() IP {
+    return p.network
+}
+
+func (p IPPrefix) Bits() int {
+    if !p.IsValid() {
+        return -1
+    };
+    return p.bits
+}
+
+func (p IPPrefix) String() string {
+    if !p.IsValid() {
+        return ""
+    }
+    return p.network.String() + "/" + strconv.Itoa(p.bits)
+}
+
+func (p IPPrefix) Contains(ip IP) bool {
+    if !p.IsValid() || !ip.IsValid() || p.network.Is4() != ip.Is4() {
+        return false
+    }
+    let network = ipWords(p.network)
+    let candidate = ipWords(ip)
+    var width = 16
+    if ip.Is4() {
+        width = 8
+    }
+    var remaining = p.bits
+    for i, word in network {
+        if remaining == 0 {
+            return true
+        }
+        var take = width
+        if remaining < take {
+            take = remaining
+        }
+        let shift = width - take
+        if (word >> shift) != (candidate[i] >> shift) {
+            return false
+        }
+        remaining -= take
+    }
+    return true
+}
