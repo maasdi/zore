@@ -22,6 +22,10 @@ including those shipped in `0.1.0-alpha.1`, are not split by release.
   its size. `http.DecodeStream` unpacks a stream opened another way, and
   `http.DecodeHeaders` prepares the request headers.
 - The same limits and errors as `DoDecoded` apply, checked as the body is read.
+  Without a declared packed length only `MaxBytes` applies. Bytes unpacked
+  before an error are returned first, and long back-references stream out in
+  one read.
+- `flate.Decoder.Buffered` reports the back-reference bytes ready to deliver.
 
 ### Automatic HTTP/2 for HTTPS
 

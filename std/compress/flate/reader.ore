@@ -53,6 +53,13 @@ func (d Decoder) OutputBytes() int {
     return d.output
 }
 
+func (d Decoder) Buffered() int {
+    if d.err == nil && d.phase == codesPhase {
+        return d.remaining
+    }
+    return 0
+}
+
 func octet<R io.Reader>(r mut Decoder, source mut R) (byte, error) {
     if r.pending != nil {
         if r.pending == io.EOF {

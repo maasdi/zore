@@ -11562,7 +11562,8 @@ An all-zero unused distance alphabet is accepted until a length needs it.
 Padding bits at block/member boundaries are ignored as the format permits.
 After `SetStreaming(true)`, `Read` returns as soon as it has at least one byte
 and producing more would read the source again, so output arrives as input
-does; otherwise it fills the buffer. A stream is validated only after a nonempty `Read` returns `io.EOF`; bytes
+does; a back-reference already decoded is copied out in full first. Otherwise
+it fills the buffer. A stream is validated only after a nonempty `Read` returns `io.EOF`; bytes
 returned earlier, including bytes returned with a later error, are unverified
 partial output. Reading exactly the expected payload length is insufficient.
 `Close` does not substitute for reading to EOF. Member count and byte ceilings
@@ -11770,7 +11771,9 @@ its existing codec here; there is one implementation of Huffman and LZ77 rules.
   including input accepted before a sink failure. Empty input does not start a
   block. A whole write exceeding the input ceiling is rejected before acceptance.
 - Decoder `InputBytes()` and `OutputBytes()` report consumed compressed bytes
-  and delivered bytes. Encoder counters report accepted input and written
+  and delivered bytes. `Buffered()` reports how many bytes of a decoded
+  back-reference remain to be delivered without reading input, and 0 after a
+  failure. Encoder counters report accepted input and written
   compressed bytes. The caller must supply the same continuous logical source
   or sink throughout a state; neither state retains or closes it. Borrows last
   only for the call. Levels and `Flush` are §37.32; there is no reset API.
@@ -13700,15 +13703,16 @@ memory does not grow with the body size.
 
 Limits are checked as the body is read. When the response declares its packed
 `Content-Length`, the unpacked size is bounded exactly as in §37.46 from that
-length. Otherwise more than `MaxBytes` unpacked bytes fails with
-`http.Client: decoded body too large`, and more unpacked bytes than `MaxRatio`
-times the packed bytes read so far fails with
-`http.Client: decoded body expands too much`; very large `MaxRatio` values do
-not overflow. A packed body above 1 GiB fails with
-`http.Client: encoded body too large to decode`. A gzip body that turns out to
-be empty is returned as an empty, complete body. Broken data fails with the gzip
-reader's error, such as `gzip: checksum mismatch` or `gzip: truncated stream`,
-after the bytes already unpacked; concatenated members are joined and other
+length. Otherwise only `MaxBytes` applies, since the unpacked body is not held in
+memory: more than `MaxBytes` unpacked bytes fails with
+`http.Client: decoded body too large`. A packed body above 1 GiB fails with
+`http.Client: encoded body too large to decode`. Bytes unpacked before a limit
+or other failure are returned by `Read` first; the error follows on the next
+call. A gzip body that turns out to be empty is returned as an empty, complete
+body without `Content-Encoding`, while a body already known to be empty (such as
+`Content-Length: 0`) is returned unchanged with its headers. Broken data fails
+with the gzip reader's error, such as `gzip: checksum mismatch` or
+`gzip: truncated stream`, after the bytes already unpacked; concatenated members are joined and other
 trailing data is an error. Errors of the underlying stream, including its
 `StreamConfig` limits, timeouts and cancellation, are returned unchanged.
 `Trailers` reports the underlying stream's trailers once the end is reached.

@@ -209,7 +209,7 @@ func (r mut Reader) Read(buf mut []byte) (int, error) {
     }
     var count = 0
     for count < buf.len() {
-        if r.streaming && count > 0 && r.input.cursor == r.input.used && r.input.pending == nil {
+        if r.streaming && count > 0 && r.input.cursor == r.input.used && r.input.pending == nil && !(r.phase == blockPhase && r.decoder.Buffered() > 0) {
             return count, nil
         }
         let value, err = r.next()

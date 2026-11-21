@@ -282,11 +282,20 @@ func run() error {
     expectStream(client, "/bomb", roomy, "1048576 bytes complete=true")
     expectStream(client, "/chunked", defaults, "hello world complete=true")
     expectStream(client, "/chunkedempty", defaults, " complete=true")
-    expectStream(client, "/chunkedbomb", defaults, "error http.Client: decoded body expands too much")
-    var unbounded = defaults
-    unbounded.MaxRatio = 4611686018427387903
-    unbounded.MaxBytes = 2097152
-    expectStream(client, "/chunkedbomb", unbounded, "1048576 bytes complete=true")
+    expectStream(client, "/chunkedbomb", defaults, "1048576 bytes complete=true")
+    expectStream(client, "/chunkedbomb", small, "error http.Client: decoded body too large")
+    var tiny = small
+    tiny.MaxBytes = 10
+    var capped = client.OpenDecoded(context.Background(), "GET", "https://a.test/bomb", http.NewHeader(), nothing[:], http.DefaultStreamConfig(), tiny)?
+    var seven = Array<byte>{0, 0, 0, 0, 0, 0, 0}
+    var cappedTotal = 0
+    var cappedErr error = nil
+    for cappedErr == nil {
+        let n, err = capped.Read(seven[:])
+        cappedTotal += n
+        cappedErr = err
+    }
+    check(cappedTotal == 10 && failure(cappedErr) == "http.Client: decoded body too large", "bytes before the limit are kept")
     let streamedPartial = client.OpenDecoded(context.Background(), "GET", "https://a.test/partial", http.NewHeader(), nothing[:], http.DefaultStreamConfig(), defaults)?
     check(streamedPartial.StatusCode() == 206 && streamedPartial.Headers().Values("Content-Encoding").len() == 1, "streamed 206 unchanged")
     let _ = drain(log)
